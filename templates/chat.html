@@ -231,12 +231,7 @@
   <body>
     <header class="header">
       <div class="header-center">{{ bot_name }}</div>
-      <button
-        class="close-btn"
-        onclick="window.location.href='{{ url_for('index') }}'"
-      >
-        &times;
-      </button>
+      <a class="close-btn" href="{{ url_for('index') }}">&times;</a>
     </header>
 
     <div class="chat-area" data-username="{{ username }}">
@@ -292,6 +287,6 @@
       </div>
     </div>
 
-    <script src="{{ url_for('static', filename='js/chatbot_single.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/chatbot.js') }}"></script>
   </body>
 </html>

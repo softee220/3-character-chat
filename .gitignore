@@ -47,3 +47,6 @@ env/
 
 # repomix code base
 repomix-output.xml
+
+# Ignore large binary files for now
+static/images/hateslop/*.png
