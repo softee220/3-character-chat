@@ -11,17 +11,6 @@ from .rag_service import RAGService
 from .config_loader import ConfigLoader
 import traceback
 
-# LangChain import (안전한 방식)
-try:
-    from langchain_community.memory import ConversationSummaryBufferMemory
-    from langchain_openai import ChatOpenAI
-    LANGCHAIN_AVAILABLE = True
-except ImportError as e:
-    print(f"[WARNING] LangChain import 실패: {e}")
-    LANGCHAIN_AVAILABLE = False
-    ConversationSummaryBufferMemory = None
-    ChatOpenAI = None
-
 # 환경변수 로드
 load_dotenv()
 
@@ -50,39 +39,29 @@ class ChatbotService:
         # 3. RAG 서비스 초기화
         self.rag_service = RAGService(self.client)
         
-        # 4. LangChain Memory 초기화 (API 키가 있을 때만)
-        self.memory = None
-        if api_key and LANGCHAIN_AVAILABLE:
-            try:
-                # 최신 langchain-openai에서는 openai_api_key 또는 환경변수 사용
-                llm = ChatOpenAI(
-                    openai_api_key=api_key,  # api_key → openai_api_key로 변경
-                    temperature=0.7, 
-                    model="gpt-4o-mini"
-                )
-                self.memory = ConversationSummaryBufferMemory(
-                    llm=llm,
-                    max_token_limit=1000,
-                    return_messages=True
-                )
-                print("[ChatbotService] LangChain 메모리 초기화 성공")
-            except Exception as e:
-                print(f"[WARNING] 메모리 초기화 실패: {e}")
-                traceback.print_exc()
-                self.memory = None  # 실패해도 계속 진행
-        elif not LANGCHAIN_AVAILABLE:
-            print("[WARNING] LangChain 라이브러리가 설치되지 않아 메모리 기능을 비활성화합니다.")
+        # 4. 대화 기록 저장소 초기화
+        self.dialogue_history: List[Dict[str, str]] = []
         
         # 5. 감정 분석 서비스 초기화
         self.emotion_analyzer = EmotionAnalyzer()
         self.report_generator = ReportGenerator()
         
-        # 6. DSM 상태 관리 변수 초기화
-        self.dialogue_state = 'INITIAL_SETUP'  # 대화 상태 (INITIAL_SETUP, RECALL_ATTACHMENT, RECALL_REGRET, etc.)
+        # 5. DSM 상태 관리 변수 초기화
+        self.dialogue_state = 'INITIAL_SETUP'  # 대화 상태
         self.turn_count = 0  # 대화 턴 수 추적
         self.stop_request_count = 0  # 사용자 대화 중단 요청 횟수
-        self.state_turns = 0  # 현재 상태에서 진행된 턴 수 (Fail-Safe)
+        self.state_turns = 0  # 현재 상태에서 진행된 턴 수
         self.dialogue_states_flow = ['RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_UNRESOLVED', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
+        
+        # 6. 고정 질문 시스템 초기화
+        self.fixed_questions = self.config.get('fixed_questions', {})
+        self.question_indices = {}  # 각 상태별 현재 질문 인덱스
+        self.tail_question_used = {}  # 각 상태별 꼬리 질문 사용 여부
+        
+        # 초기화: 모든 상태의 질문 인덱스를 0으로 설정
+        for state in self.fixed_questions.keys():
+            self.question_indices[state] = 0
+            self.tail_question_used[state] = False
         
         # 7. Flow Control 파라미터 로드 (config에서)
         flow_control = self.config.get('flow_control', {})
@@ -108,59 +87,175 @@ class ChatbotService:
         print("[ChatbotService] 초기화 완료")
     
     
-    def _build_prompt(self, user_message: str, context: str = None, username: str = "사용자", bridge_prompt_addition: str = None):
- 
-        # 시스템 프롬프트 구성
-        system_prompt = self.config.get('system_prompt', {})
-        base_prompt = system_prompt.get('base', '당신은 환승연애팀 막내 PD가 된 친구입니다.')
-        rules = system_prompt.get('rules', [])
+    def _get_next_question(self, state: str) -> Optional[str]:
+        """
+        현재 상태의 다음 고정 질문을 가져옵니다.
         
-        # 기본 프롬프트 구성
-        prompt_parts = [base_prompt]
+        Args:
+            state: DSM 상태
+            
+        Returns:
+            다음 고정 질문 문자열, 없으면 None
+        """
+        if state not in self.fixed_questions:
+            return None
         
-        # 규칙 추가
-        if rules:
-            prompt_parts.append("\n".join([f"- {rule}" for rule in rules]))
+        questions = self.fixed_questions[state]
+        current_idx = self.question_indices.get(state, 0)
         
-        # RAG 컨텍스트 추가
-        if context:
-            prompt_parts.append(f"\n[참고 정보]\n{context}")
+        if current_idx < len(questions):
+            return questions[current_idx]
+        return None
+    
+    
+    def _is_questions_exhausted(self, state: str) -> bool:
+        """
+        현재 상태의 고정 질문을 모두 소진했는지 확인합니다.
         
-        # 대화 기록 추가 (선택)
-        if self.memory:
-            try:
-                memory_vars = self.memory.load_memory_variables({})
-                if memory_vars and 'history' in memory_vars:
-                    prompt_parts.append(f"\n[대화 기록]\n{memory_vars['history']}")
-            except Exception as e:
-                print(f"[WARNING] 메모리 로드 실패: {e}")
+        Args:
+            state: DSM 상태
+            
+        Returns:
+            True if 모든 질문 소진, False otherwise
+        """
+        if state not in self.fixed_questions:
+            return True
         
-        # 지능적 꼬리 질문 지시문 (상태별로 동적 추가)
+        questions = self.fixed_questions[state]
+        current_idx = self.question_indices.get(state, 0)
+        
+        return current_idx >= len(questions)
+    
+    
+    def _mark_question_used(self, state: str):
+        """
+        현재 질문을 사용 완료로 표시하고 인덱스를 증가시킵니다.
+        """
+        if state not in self.question_indices:
+            self.question_indices[state] = 0
+        self.question_indices[state] += 1
+        print(f"[QUESTION] {state} 상태: 질문 인덱스 → {self.question_indices[state]}")
+    
+    
+    def _detect_topic_deviation(self, user_message: str) -> Optional[str]:
+        """
+        사용자 메시지에서 주제 이탈을 감지합니다.
+        
+        Args:
+            user_message: 사용자 메시지
+            
+        Returns:
+            redirect 타입 ("current_future_relationship" or "personal_topic") 또는 None
+        """
+        current_future_keywords = ['현애인', '지금 만나는', '다음 연애', '미래', '새로운 사람', '현재', '지금']
+        personal_keywords = ['일상', '취미', '가족', '학교', '회사', '여행']
+        
+        message_lower = user_message.lower()
+        
+        # 현애인/미래 주제 이탈
+        if any(keyword in message_lower for keyword in current_future_keywords):
+            return "current_future_relationship"
+        
+        # 사적 주제 이탈 (간단한 휴리스틱, 필요시 확장)
+        personal_count = sum(1 for keyword in personal_keywords if keyword in message_lower)
+        if personal_count >= 2:  # 사적 키워드가 2개 이상 포함되면
+            return "personal_topic"
+        
+        return None
+    
+    
+    def _generate_bridge_question_prompt(self, current_state: str, next_state: str, transition_reason: str) -> str:
+        """
+        상태 전환 시 브릿지 질문 생성을 위한 프롬프트를 생성합니다.
+        
+        Args:
+            current_state: 현재 상태
+            next_state: 다음 상태
+            transition_reason: 전환 이유
+            
+        Returns:
+            브릿지 프롬프트 문자열
+        """
+        next_question = self._get_next_question(next_state)
+        
+        bridge_prompt = f"""
+[상태 전환 지시]
+현재 상태: {current_state} → 다음 상태: {next_state}
+전환 이유: {transition_reason}
+
+지금까지 사용자가 말한 내용을 1-2문장으로 자연스럽게 요약하고,
+다음 질문으로 자연스럽게 넘어가는 브릿지 멘트를 생성하세요.
+
+다음 질문: {next_question}
+
+친근한 친구 말투로, 자연스럽게 전환하되 사용자가 상태 전환을 눈치채지 못하게 하세요.
+"""
+        return bridge_prompt
+    
+    
+    def _generate_closing_proposal_prompt(self, recent_dialogue: List[Dict[str, str]]) -> str:
+        """
+        대화 종료 제안 프롬프트를 생성합니다.
+        
+        Args:
+            recent_dialogue: 최근 대화 기록
+            
+        Returns:
+            종료 제안 프롬프트 문자열
+        """
+        closing_prompt = """
+[대화 종료 제안]
+
+네 이야기를 들어보니 [대화 내용 1~2문장 핵심 요약 및 공감] 같은데,
+더 깊은 이야기는 나중에 더 해보자.
+내가 아까 말한 우리 팀 데모 AI 에이전트에 네 데이터 충분히 들어간 것 같거든?
+재미삼아 AI 분석 결과를 지금 바로 **'분석'**해 볼래?
+분석을 원하면 말해줘!
+"""
+        return closing_prompt
+    
+    
+    def _build_prompt(self, user_message: str, username: str = "사용자", special_instruction: str = None):
+        """
+        현재 턴의 지시사항과 사용자 메시지를 구성합니다.
+        
+        Args:
+            user_message: 사용자 메시지
+            username: 사용자 이름
+            special_instruction: 특별 지시사항 (브릿지, redirect 등)
+        """
+        prompt_parts = []
+        
+        # 상태별 꼬리 질문 지시
+            # 상태별 꼬리 질문 지시
         if self.dialogue_state == 'RECALL_ATTACHMENT':
-            prompt_parts.append("\n[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자가 언급한 감정적 단어를 추출하고, 그 단어에 반대되는 감정을 묻는 질문을 생성하여 애착도 점수를 미세 조정하세요. (예: '그리워' → '근데 후회되는 일은 없어?').")
-        elif self.dialogue_state == 'RECALL_REGRET': # 후회에 맞는 프롬포트인가??
-            prompt_parts.append("\n[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자의 답변에서 가장 모호하거나 논리적 비약이 있는 부분을 1개 선정하여, 그것의 근본적인 원인을 파고드는 질문(예: '왜' 또는 '만약'을 사용하는)을 생성하세요. 감정의 일관성을 검증해야 합니다.")
+            prompt_parts.append("[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자가 언급한 감정과 관련된 다른 순간이나 경험이 있었는지 자연스럽게 궁금해하며 물어봐.")
+        elif self.dialogue_state == 'RECALL_REGRET':
+            prompt_parts.append("[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자의 답변에서 궁금한 부분이나 자세히 듣고 싶은 부분을 자연스럽게 물어봐.")
         elif self.dialogue_state == 'RECALL_UNRESOLVED':
-            prompt_parts.append("\n[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자 답변에서 모호한 상황을 추출하고, 그 모호함을 해소하기 위해 '결정적 순간'을 묻는 질문을 생성하여 미해결감을 측정하세요.")
+            prompt_parts.append("[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자 답변에서 아직 잘 모르겠는 부분이나 궁금한 장면에 대해 자연스럽게 물어봐.")
+        elif self.dialogue_state == 'RECALL_COMPARISON':
+            prompt_parts.append("[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐.")
+        elif self.dialogue_state == 'RECALL_AVOIDANCE':
+            prompt_parts.append("[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐.")
         
-        # 상태 전환 브릿지 질문 지시 추가 (유연한 전환 시)
-        if bridge_prompt_addition:
-            prompt_parts.append(bridge_prompt_addition)
+        
+        # 특별 지시사항 추가 (브릿지, redirect 등)
+        if special_instruction:
+            prompt_parts.append(special_instruction.strip())
         
         # 사용자 메시지 추가
-        prompt_parts.append(f"\n{username}: {user_message}")
+        prompt_parts.append(f"{username}: {user_message}")
         
         return "\n".join(prompt_parts)
     
     
     def generate_response(self, user_message: str, username: str = "사용자") -> dict:
-        
-        
-        # 여기에 전체 파이프라인 구현
-        # 위의 단계를 참고하여 자유롭게 설계하세요
         
         try:
             print(f"\n{'='*50}")
@@ -169,211 +264,282 @@ class ChatbotService:
             # [1단계] 초기 메시지 처리
             if user_message.strip().lower() == "init":
                 bot_name = self.config.get('name', '환승연애 PD 친구')
-                # 도입부: INITIAL_SETUP 상태로 시작
                 self.dialogue_state = 'INITIAL_SETUP'
                 self.turn_count = 0
                 self.stop_request_count = 0
                 self.state_turns = 0
-                return {
-                    'reply': f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지마마 그냥 친구한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?",
-
-                    'image': None
-                }
+                self.dialogue_history = []
+                self.question_indices = {state: 0 for state in self.fixed_questions.keys()}
+                self.tail_question_used = {state: False for state in self.fixed_questions.keys()}
+                
+                reply = f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지마마 그냥 친구한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
+                self.dialogue_history.append({"role": "혜슬", "content": reply})
+                return {'reply': reply, 'image': None}
             
-            # [조기 종료 2: 중단 요청 처리] - turn_count 증가 전에 처리
+            # [2단계] 중단 요청 처리 (turn_count 증가 전)
             if '그만할래' in user_message or '그만 말하고 싶어' in user_message:
                 self.stop_request_count += 1
-                if self.stop_request_count >= self.stop_request_threshold:
-                    print(f"[FLOW_CONTROL] {self.stop_request_threshold}회차 중단 요청. 강제 보고서 전환.")
+                print(f"[FLOW_CONTROL] 중단 요청 {self.stop_request_count}회")
+                
+                if self.stop_request_count < self.stop_request_threshold:
+                    # 1회차 중단 요청: 설득 시도
+                    current_key_question = self._get_next_question(self.dialogue_state)
+                    if current_key_question:
+                        special_instruction = f"\n[중단 요청 1회차]: 아쉽다... 나 너랑 더 얘기하고 싶은데... 혹시 딱 하나만 더 물어봐도 될까? 네 얘기가 진짜 중요한 단서거든. {current_key_question}에 대한 대답만 듣고 끝낼게, 어때?"
+                    else:
+                        special_instruction = "\n[중단 요청 1회차]: 아쉽다... 나 너랑 더 얘기하고 싶은데... 혹시 딱 하나만 더 물어봐도 될까? 네 얘기가 진짜 중요한 단서거든."
+                else:
+                    # 2회차: 강제 종료
+                    print(f"[FLOW_CONTROL] {self.stop_request_threshold}회차 중단 요청. 강제 종료.")
                     self.dialogue_state = 'TRANSITION_FORCED_REPORT'
-                    # 강제 종료 프롬프트는 bridge_prompt_addition으로 처리
+                    special_instruction = "\n[강제 종료]: 아쉽다... 난 너랑 더 얘기하고 싶었는데... 그래도 지금까지 답해줘서 고마워! 우리 팀 데모 AI한테 살짝 너의 얘기 돌려봤는데... 같은 친근한 톤으로 강제 종료 후 리포트로 전환하는 자연스러운 메시지를 생성하세요."
+                
+                # 프롬프트 구성 및 LLM 호출은 아래로 이동
+            else:
+                special_instruction = None
             
             # 일반 메시지의 경우 turn_count 증가
             self.turn_count += 1
             
-            # [턴 트래킹 로직] - 상태 전환 감지 및 state_turns 관리
-            previous_state = self.dialogue_state  # 상태 전환 로직 실행 전 상태 저장
+            # [3단계] 주제 이탈 감지 및 redirect
+            deviation_type = None
+            if not special_instruction:  # 중단 요청 처리 중이 아닐 때만
+                deviation_type = self._detect_topic_deviation(user_message)
+                if deviation_type == "current_future_relationship":
+                    special_instruction = "\n[주제 이탈 Redirect]: 어! 잠깐만ㅋㅋ 현애인 이야기나 미래 이야기는 우리 AI 분석 범위 밖이라서... (아직 데모라 데이터가 X에 대한 것만 모으고 있대!) 미안한데, 오직 네 X와의 연애 이야기에만 집중해서 계속 이야기해줄 수 있을까? 그 X는 어땠는지 좀 더 듣고 싶어!"
+                elif deviation_type == "personal_topic":
+                    # 최근 대화에서 X 관련 키워드 추출 시도
+                    recent_keyword = "X와의 사건"  # 기본값
+                    if len(self.dialogue_history) >= 2:
+                        last_user_msg = self.dialogue_history[-2].get('content', '')
+                        # 간단한 키워드 추출 (실제로는 더 정교한 로직 필요)
+                        if '만난' in last_user_msg:
+                            recent_keyword = "첫만남"
+                        elif '헤어' in last_user_msg:
+                            recent_keyword = "헤어진 계기"
+                    
+                    special_instruction = f"\n[주제 이탈 Redirect]: 야, {username}아! 네 일상 얘기도 좋긴 한데ㅋㅋ 나 지금 이거 기획안에 쓸 데이터 모으는 중이잖아. 혹시 아까 네가 얘기했던 **[{recent_keyword}]**에 대해 좀 더 자세히 말해줄 수 있어? 그래야 AI가 정확하게 분석할 수 있대!"
             
-            # [2단계] RAG 검색 수행
-            #우리는 RAG 검색 매 질문마다 사용 하지 않음 불필요 
-            context, similarity, metadata = self.rag_service.search_similar(
-                query=user_message,
-                threshold=0.45,
-                top_k=5
-            )
+            # [턴 트래킹] 상태 전환 감지 및 state_turns 관리
+            previous_state = self.dialogue_state
             
-            has_context = (context is not None)
-            print(f"[RAG] Context found: {has_context}")
-            if has_context:
-                print(f"[RAG] Similarity: {similarity:.4f}")
-                print(f"[RAG] Context: {context[:100]}...")
-            
-            # [3단계] 연애 감정 분석 수행
+            # [4단계] 연애 감정 분석 수행
             analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
             print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
             
-            # [조기 전환 1: 미련도 임계값 미만]
-            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count:
-                print(f"[FLOW_CONTROL] 완전 정리 단계로 추론 (미련도 < {self.low_regret_threshold}%, 턴 수 >= {self.early_exit_turn_count}). 인터뷰 조기 종료 및 보고서 전환 유도.")
-                self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
-                # 프롬프트는 bridge_prompt_addition으로 처리
+            # [4.5단계] 고정 질문 및 꼬리 질문 관리
+            # 현재 상태가 고정 질문을 가진 상태이고, 특별 지시사항이 없으며, 주제 이탈이 아닐 때만
+            if (self.dialogue_state in self.fixed_questions and 
+                not special_instruction and 
+                not deviation_type and
+                self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']):
+                
+                # 고정 질문이 아직 남아있는지 확인
+                if not self._is_questions_exhausted(self.dialogue_state):
+                    current_q_idx = self.question_indices.get(self.dialogue_state, 0)
+                    tail_used = self.tail_question_used.get(self.dialogue_state, False)
+                    
+                    # 현재 질문 인덱스가 가리키는 질문을 아직 던지지 않았다면 (꼬리 질문 단계가 아니라면)
+                    if not tail_used:
+                        # 고정 질문 던지기
+                        next_question = self._get_next_question(self.dialogue_state)
+                        if next_question:
+                            special_instruction = f"\n[고정 질문]: 다음 질문을 자연스럽게 물어보세요: {next_question}"
+                            print(f"[QUESTION] {self.dialogue_state}: 고정 질문 #{current_q_idx} 던짐")
+                            # 고정 질문을 던졌으므로 다음 턴에는 꼬리 질문 허용
+                            self.tail_question_used[self.dialogue_state] = True
+                    else:
+                        # 꼬리 질문 단계 - 꼬리 질문 지시는 _build_prompt에서 자동으로 추가됨
+                        print(f"[QUESTION] {self.dialogue_state}: 꼬리 질문 허용 중")
+                        # 꼬리 질문 완료 후 다음 고정 질문으로 이동
+                        self._mark_question_used(self.dialogue_state)
+                        self.tail_question_used[self.dialogue_state] = False
             
-            bridge_prompt_addition = None  # 브릿지 질문 프롬프트 추가용
+            # [5단계] 상태 전환 조건 체크 (우선순위: 턴 수 → 질문 소진 → 점수)
+            bridge_prompt_added = False
             
-            # [상태 강제 전환 (오류 해결)] - 유연한 전환 로직 전에 실행
-            current_state = self.dialogue_state
+            if previous_state != 'INITIAL_SETUP' and previous_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']:
+                # 조건 1: 턴 수 초과
+                if self.state_turns >= self.max_state_turns:
+                    # 다음 상태로 전환
+                    try:
+                        current_idx = self.dialogue_states_flow.index(previous_state)
+                        if current_idx + 1 < len(self.dialogue_states_flow):
+                            next_state = self.dialogue_states_flow[current_idx + 1]
+                            self.dialogue_state = next_state
+                            print(f"[FLOW_CONTROL] {previous_state} 상태 턴 수 초과. → {next_state}로 전환")
+                            
+                            # 브릿지 프롬프트 생성
+                            if not special_instruction:
+                                special_instruction = self._generate_bridge_question_prompt(
+                                    previous_state, next_state, "턴 수 초과"
+                                )
+                            bridge_prompt_added = True
+                    except ValueError:
+                        pass
+                
+                # 조건 2: 고정 질문 소진
+                elif self._is_questions_exhausted(previous_state):
+                    try:
+                        current_idx = self.dialogue_states_flow.index(previous_state)
+                        if current_idx + 1 < len(self.dialogue_states_flow):
+                            next_state = self.dialogue_states_flow[current_idx + 1]
+                            self.dialogue_state = next_state
+                            print(f"[FLOW_CONTROL] {previous_state} 고정 질문 소진. → {next_state}로 전환")
+                            
+                            if not special_instruction:
+                                special_instruction = self._generate_bridge_question_prompt(
+                                    previous_state, next_state, "고정 질문 소진"
+                                )
+                            bridge_prompt_added = True
+                    except ValueError:
+                        pass
+                
+                # 조건 3: 점수 임계값 도달 (상태별로)
+                elif not bridge_prompt_added:
+                    threshold_map = {
+                        'RECALL_ATTACHMENT': analysis_results['attachment'],
+                        'RECALL_REGRET': analysis_results['regret'],
+                        'RECALL_UNRESOLVED': analysis_results['unresolved'],
+                        'RECALL_COMPARISON': analysis_results['comparison'],
+                        'RECALL_AVOIDANCE': analysis_results['avoidance']
+                    }
+                    
+                    threshold_value_map = {
+                        'RECALL_ATTACHMENT': self.high_attachment_threshold,
+                        'RECALL_REGRET': self.high_regret_threshold,
+                        'RECALL_UNRESOLVED': self.high_unresolved_threshold,
+                        'RECALL_COMPARISON': self.high_comparison_threshold,
+                        'RECALL_AVOIDANCE': self.high_avoidance_threshold
+                    }
+                    
+                    if previous_state in threshold_map and threshold_map[previous_state] > threshold_value_map[previous_state]:
+                        try:
+                            current_idx = self.dialogue_states_flow.index(previous_state)
+                            if current_idx + 1 < len(self.dialogue_states_flow):
+                                next_state = self.dialogue_states_flow[current_idx + 1]
+                                self.dialogue_state = next_state
+                                print(f"[FLOW_CONTROL] {previous_state} 점수 임계값 도달. → {next_state}로 전환")
+                                
+                                if not special_instruction:
+                                    special_instruction = self._generate_bridge_question_prompt(
+                                        previous_state, next_state, "점수 임계값 도달"
+                                    )
+                        except ValueError:
+                            pass
             
-            # 강제 전환 로직: 각 상태에서 최대 턴 수 초과 시 다음 상태로 전환 (INITIAL_SETUP 상태가 아닐 때만 실행)
-            if current_state != 'INITIAL_SETUP':
-                if current_state == 'RECALL_ATTACHMENT' and self.state_turns > self.max_state_turns:
-                    print(f"[FLOW_CONTROL] RECALL_ATTACHMENT 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
-                    self.dialogue_state = 'RECALL_REGRET'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                elif current_state == 'RECALL_REGRET' and self.state_turns > self.max_state_turns:
-                    print(f"[FLOW_CONTROL] RECALL_REGRET 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
-                    self.dialogue_state = 'RECALL_UNRESOLVED'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게. 이 단계에선 헤어진 이유에 대한 질문이 무조건 들어가야 해."
-                elif current_state == 'RECALL_UNRESOLVED' and self.state_turns > self.max_state_turns:
-                    print(f"[FLOW_CONTROL] RECALL_UNRESOLVED 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
-                    self.dialogue_state = 'RECALL_COMPARISON'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                elif current_state == 'RECALL_COMPARISON' and self.state_turns > self.max_state_turns:
-                    print(f"[FLOW_CONTROL] RECALL_COMPARISON 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
-                    self.dialogue_state = 'RECALL_AVOIDANCE'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                elif current_state == 'RECALL_AVOIDANCE' and self.state_turns > self.max_state_turns:
-                    print(f"[FLOW_CONTROL] RECALL_AVOIDANCE 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
-                    self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-            
-            # 중단 요청 처리
-            if self.stop_request_count >= self.stop_request_threshold and self.dialogue_state == 'TRANSITION_FORCED_REPORT':
-                bridge_prompt_addition = "\n[강제 종료 템플릿]: 아쉽다... 난 너랑 더 얘기하고 싶었는데... 그래도 지금까지 답해줘서 고마워! 우리 팀 데모 AI한테 살짝 너의 얘기 돌려봤는데... 같은 친근한 톤으로 강제 종료 후 리포트로 전환하는 자연스러운 메시지를 생성하세요."
-            
-            # 조기 전환 1 처리
-            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state == 'TRANSITION_NATURAL_REPORT':
-                if not bridge_prompt_addition:  # 이미 bridge_prompt_addition이 설정되지 않은 경우에만
-                    bridge_prompt_addition = "\n[조기 종료 템플릿]: 와, 너 완전히 정리했네! 그럼 여기서 인터뷰 마무리하고 AI 분석 리포트 바로 볼래? 같은 자연스러운 메시지를 생성하여 리포트 단계로 전환하세요."
-            
-            # [3-1단계] INITIAL_SETUP 로직 구현 - 가장 먼저 실행
-            current_state = self.dialogue_state
-            
-            if current_state == 'INITIAL_SETUP':
+            # INITIAL_SETUP 로직
+            if self.dialogue_state == 'INITIAL_SETUP':
                 positive_keywords = ['그래', '알았어', '좋아', '응', 'ok', '네']
                 negative_keywords = ['싫어', '안 해', '못 해', '그만', '바빠']
                 
-                # positive_keywords와 같은 문맥의 대답인지 확인
                 if any(keyword in user_message for keyword in positive_keywords):
-                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답 확인. RECALL_ATTACHMENT로 전환.")
                     self.dialogue_state = 'RECALL_ATTACHMENT'
-                    bridge_prompt_addition = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 첫만남을 묻는 질문을 시작해"
-                    current_state = 'RECALL_ATTACHMENT'  # current_state 업데이트
-                # negative_keywords와 같은 문맥의 대답인지 확인
+                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_ATTACHMENT")
+                    if not special_instruction:
+                        special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 첫만남을 묻는 질문을 시작해"
                 elif any(keyword in user_message for keyword in negative_keywords):
-                    print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답 확인. INITIAL_SETUP 유지 및 설득.")
-                    self.dialogue_state = 'INITIAL_SETUP'
-                    bridge_prompt_addition = "\n[INITIAL_SETUP 설득]: 야! 난 네 친구잖아. PD가 된 친구를 도와준다고 생각해줘. 네 얘기 진짜 도움 될 거 같아. X 얘기 좀 편하게 해줘."
+                    print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
+                    if not special_instruction:
+                        special_instruction = "\n[INITIAL_SETUP 설득]: 야! 난 네 친구잖아. PD가 된 친구를 도와준다고 생각해줘. 그래도 정말 안 되면 어쩔 수 없지만ㅠㅠ **다른 연애 이야기는 절대 안 돼!** 우리 기획은 오직 '전 애인 X와의 미련도'만 분석하는 거라서, 꼭 그 X 얘기만 들어야 해. 하나만이라도 괜찮아, 그냥 어떤 순간이었는지만 얘기해줘! 절대 다른 주제로 대화를 바꾸지 마."
             
-            # [3-2단계] 유연한 상태 전환 로직 (Task 2) - 강제 전환 로직 이후에 실행
-            # INITIAL_SETUP 상태가 아닐 때만 실행
-            if current_state != 'INITIAL_SETUP':
-                # 조건부 로직 1: RECALL_ATTACHMENT → RECALL_REGRET (기준 attachment > threshold)
-                if current_state == 'RECALL_ATTACHMENT' and analysis_results['attachment'] > self.high_attachment_threshold:
-                    print(f"[FLOW_CONTROL] 애착도 데이터 충분(>{self.high_attachment_threshold}%). 다음 상태로 자연스럽게 전환.")
-                    self.dialogue_state = 'RECALL_REGRET'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 네 얘기에서 X에 대한 그리움이 확 느껴지네. 그럼 그때 네가 아쉬웠던 점은 없어? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                
-                # 조건부 로직 2: RECALL_REGRET → RECALL_UNRESOLVED (기준 regret > threshold)
-                elif current_state == 'RECALL_REGRET' and analysis_results['regret'] > self.high_regret_threshold:
-                    print(f"[FLOW_CONTROL] 후회도 데이터 충분(>{self.high_regret_threshold}%). 다음 상태로 자연스럽게 전환.")
-                    self.dialogue_state = 'RECALL_UNRESOLVED'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게. 이 단계에선 헤어진 이유에 대한 질문이 무조건 들어가야 해."
-                
-                # 조건부 로직 3: RECALL_UNRESOLVED → RECALL_COMPARISON (기준 unresolved > threshold)
-                elif current_state == 'RECALL_UNRESOLVED' and analysis_results['unresolved'] > self.high_unresolved_threshold:
-                    print(f"[FLOW_CONTROL] 미해결감 데이터 충분(>{self.high_unresolved_threshold}%). 다음 상태로 자연스럽게 전환.")
-                    self.dialogue_state = 'RECALL_COMPARISON'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 솔직히 말해봐, 지금 만나는 사람이나 다른 사람이 X랑 비교가 돼? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                
-                # 조건부 로직 4: RECALL_COMPARISON → RECALL_AVOIDANCE (기준 comparison > threshold)
-                elif current_state == 'RECALL_COMPARISON' and analysis_results['comparison'] > self.high_comparison_threshold:
-                    print(f"[FLOW_CONTROL] 비교 기준 데이터 충분(>{self.high_comparison_threshold}%). 다음 상태로 자연스럽게 전환.")
-                    self.dialogue_state = 'RECALL_AVOIDANCE'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 그 사람 얘기만 나오면 네가 좀 피하는 것 같아. 혹시 아직도 X가 연락 오면 피할 것 같아? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                
-                # 조건부 로직 5: RECALL_AVOIDANCE → TRANSITION_NATURAL_REPORT (기준 avoidance > threshold)
-                elif current_state == 'RECALL_AVOIDANCE' and analysis_results['avoidance'] > self.high_avoidance_threshold:
-                    print(f"[FLOW_CONTROL] 회피/접근 데이터 충분(>{self.high_avoidance_threshold}%). 다음 상태로 자연스럽게 전환.")
-                    self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
-                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 와, 이제 진짜 네 감정 다 파악한 것 같아! 우리 중간 보고서 바로 볼래? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+            # 조기 종료: 미련도 낮을 때
+            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING']:
+                self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
+                if not special_instruction:
+                    special_instruction = "\n[조기 종료]: 와, 너 완전히 정리했네! 그럼 여기서 인터뷰 마무리하고 AI 분석 리포트 바로 볼래?"
             
-            # [턴 트래킹 로직] - 상태 전환 여부 확인 및 state_turns 업데이트
+            # 총 턴 수 임계값
+            if self.turn_count >= self.max_total_turns and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']:
+                self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
+                if not special_instruction:
+                    special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
+            
+            # [턴 트래킹] state_turns 업데이트
             if previous_state != self.dialogue_state:
-                # 상태가 전환된 경우
                 self.state_turns = 1
                 print(f"[FLOW_CONTROL] 상태 전환: {previous_state} → {self.dialogue_state}")
+                # 상태 전환 시 꼬리 질문 플래그 리셋
+                if self.dialogue_state in self.tail_question_used:
+                    self.tail_question_used[self.dialogue_state] = False
             else:
-                # 상태가 유지된 경우
                 self.state_turns += 1
                 print(f"[FLOW_CONTROL] 상태 유지: {self.dialogue_state} (턴 수: {self.state_turns})")
             
-            # [전환부: 총 턴 수 임계값 (Task 4)] - 프롬프트 구성 전에 실행
-            current_state = self.dialogue_state
-            if self.turn_count >= self.max_total_turns and current_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING']:
-                print(f"[FLOW_CONTROL] 총 턴 수 임계값 도달(>={self.max_total_turns}). 강제 리포트 전환.")
-                self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
-                bridge_prompt_addition = "\n[대화 축약 및 전환]: PD로서 대화 흐름을 끊고, 지금까지의 대화 내용을 1-2문장으로 핵심 요약 및 공감 후, AI 분석 결과를 지금 바로 '분석'해 볼지 친근하게 제안하는 자연스러운 메시지를 생성하세요."
-            
-            # [4단계] 프롬프트 구성
+            # [6단계] 프롬프트 구성
             prompt = self._build_prompt(
                 user_message=user_message,
-                context=context,
                 username=username,
-                bridge_prompt_addition=bridge_prompt_addition
+                special_instruction=special_instruction
             )
             
-            # [5단계] LLM API 호출
-            # 불필요한 중복인가?
+            # [7단계] LLM API 호출
             if self.client:
                 print(f"[LLM] Calling API...")
+                config = ConfigLoader.load_config()
+                system_prompt_config = config.get('system_prompt', {})
+                base_prompt = system_prompt_config.get('base', '당신은 환승연애팀 막내 PD가 된 친구입니다.')
+                rules = system_prompt_config.get('rules', [])
+                
+                system_prompt_parts = [base_prompt]
+                if rules:
+                    system_prompt_parts.append("\n".join([f"- {rule}" for rule in rules]))
+                system_prompt = "\n".join(system_prompt_parts)
+                
+                messages = [{"role": "system", "content": system_prompt}]
+                
+                for item in self.dialogue_history:
+                    role = "user" if item['role'] == username else "assistant"
+                    messages.append({"role": role, "content": item['content']})
+                
+                messages.append({"role": "user", "content": prompt})
+                
                 response = self.client.chat.completions.create(
                     model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "당신은 환승연애팀 막내 PD가 된 친구입니다. 사용자의 전 연애 이야기를 듣고 미련도를 분석하기 위한 **다음 꼬리 질문을 생성하는 것이 유일한 임무**입니다. 친근함을 유지하되, **대화의 주도권을 가지고 질문을 던지세요.**"},
-                        {"role": "user", "content": prompt}
-                    ],
+                    messages=messages,
                     temperature=0.7,
                     max_tokens=500
                 )
                 reply = response.choices[0].message.content
             else:
-                # LLM 비활성화 시 기본 응답
-                reply = "AI 연애 분석 에이전트 데모 모드야. 환경변수 설정 후 더 정교한 분석이 가능해! 먼저 어떤 이야기부터 시작할까?"
+                reply = "AI 연애 분석 에이전트 데모 모드야. 환경변수 설정 후 더 정교한 분석이 가능해!"
             
-            # [6단계] 감정 리포트 생성 (특정 조건에서)
-            if any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"]) or \
-               self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT']:
-                if analysis_results['total'] > 0:  # 분석 결과가 있을 때만
-                    report = self.report_generator.generate_emotion_report(analysis_results, username)
-                    reply += f"\n\n{report}"
-                    # 리포트 생성 후 CLOSING 상태로 전환
+            # [8단계] 감정 리포트 생성 (특정 조건)
+            is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
+            is_transition_state = self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']
+            
+            if is_report_request or is_transition_state:
+                if self.dialogue_state == 'CLOSING':
+                    if analysis_results['total'] > 0:
+                        report = self.report_generator.generate_emotion_report(analysis_results, username)
+                        reply += f"\n\n{report}"
+                        print("[FLOW_CONTROL] 리포트 생성 완료.")
+                
+                elif self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT']:
+                    if is_report_request:
+                        self.dialogue_state = 'CLOSING'
+                        print("[FLOW_CONTROL] 리포트 요청 수락. CLOSING 상태로 전환.")
+                        if analysis_results['total'] > 0:
+                            report = self.report_generator.generate_emotion_report(analysis_results, username)
+                            reply += f"\n\n{report}"
+                            print("[FLOW_CONTROL] 리포트 생성 완료.")
+                
+                elif is_report_request:
                     self.dialogue_state = 'CLOSING'
-                    print("[FLOW_CONTROL] 리포트 생성 완료. CLOSING 상태로 전환.")
+                    print("[FLOW_CONTROL] 사용자 리포트 요청. CLOSING 상태로 전환.")
+                    if analysis_results['total'] > 0:
+                        report = self.report_generator.generate_emotion_report(analysis_results, username)
+                        reply += f"\n\n{report}"
+                        print("[FLOW_CONTROL] 리포트 생성 완료.")
             
-            # [7단계] 메모리 저장
-            if self.memory:
-                try:
-                    self.memory.save_context(
-                        {"input": user_message},
-                        {"output": reply}
-                    )
-                except Exception as e:
-                    print(f"[WARNING] 메모리 저장 실패: {e}")
+            # [9단계] 대화 기록 저장
+            self.dialogue_history.append({"role": username, "content": user_message})
+            self.dialogue_history.append({"role": "혜슬", "content": reply})
             
             print(f"[BOT] {reply[:100]}...")
             print(f"{'='*50}\n")
             
-            # [8단계] 응답 반환
+            # [10단계] 응답 반환
             return {
                 'reply': reply,
                 'image': None
@@ -381,6 +547,7 @@ class ChatbotService:
             
         except Exception as e:
             print(f"[ERROR] 응답 생성 실패: {e}")
+            traceback.print_exc()
             return {
                 'reply': "죄송해요, 일시적인 오류가 발생했어요. 다시 시도해주세요.",
                 'image': None
@@ -390,17 +557,11 @@ class ChatbotService:
 # ============================================================================
 # 싱글톤 패턴
 # ============================================================================
-# ChatbotService 인스턴스를 앱 전체에서 재사용
-# (매번 새로 초기화하면 비효율적)
 
 _chatbot_service = None
 
 def get_chatbot_service():
-    """
-    챗봇 서비스 인스턴스 반환 (싱글톤)
-    
-    첫 호출 시 인스턴스 생성, 이후 재사용
-    """
+    """챗봇 서비스 인스턴스 반환 (싱글톤)"""
     global _chatbot_service
     if _chatbot_service is None:
         _chatbot_service = ChatbotService()
