@@ -164,6 +164,38 @@ class ChatbotService:
         return None
     
     
+    def _detect_no_ex_story(self, user_message: str) -> bool:
+        """
+        X 스토리 부재를 감지합니다 (문맥 기반).
+        
+        주의: 부정적 답변("싫어", "안 해")과 구분해야 합니다.
+        
+        Args:
+            user_message: 사용자 메시지
+            
+        Returns:
+            X 스토리가 없으면 True, 그렇지 않으면 False
+        """
+        # X 부재 키워드
+        no_ex_keywords = [
+            '없는데', '없어', '없다', '없음',
+            '안 해봤', '못 해봤', '해본 적',
+            '모솔', '솔로', '연애 경험'
+        ]
+        
+        # 부정 답변 키워드 (이건 제외)
+        refusal_keywords = ['싫어', '안 해', '그만', '바빠']
+        
+        message_lower = user_message.lower()
+        
+        # 부정 답변이면 False (기존 중단 요청 로직으로 처리)
+        if any(kw in message_lower for kw in refusal_keywords):
+            return False
+        
+        # X 부재 키워드 1개 이상 감지
+        return any(kw in message_lower for kw in no_ex_keywords)
+    
+    
     def _generate_bridge_question_prompt(self, current_state: str, next_state: str, transition_reason: str) -> str:
         """
         상태 전환 시 브릿지 질문 생성을 위한 프롬프트를 생성합니다.
@@ -348,16 +380,20 @@ class ChatbotService:
             # [턴 트래킹] 상태 전환 감지 및 state_turns 관리
             previous_state = self.dialogue_state
             
-            # [4단계] 연애 감정 분석 수행
-            analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
-            print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
+            # [4단계] 연애 감정 분석 수행 (NO_EX_CLOSING 상태에서는 생략)
+            if self.dialogue_state == 'NO_EX_CLOSING':
+                analysis_results = {'total': 0, 'attachment': 0, 'regret': 0, 'unresolved': 0, 'comparison': 0, 'avoidance': 0}
+                print(f"[ANALYSIS] NO_EX_CLOSING 상태: 감정 분석 생략")
+            else:
+                analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
+                print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
             
             # [4.5단계] 고정 질문 및 꼬리 질문 관리
             # 현재 상태가 고정 질문을 가진 상태이고, 특별 지시사항이 없으며, 주제 이탈이 아닐 때만
             if (self.dialogue_state in self.fixed_questions and 
                 not special_instruction and 
                 not deviation_type and
-                self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']):
+                self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING']):
                 
                 # 고정 질문이 아직 남아있는지 확인
                 if not self._is_questions_exhausted(self.dialogue_state):
@@ -390,7 +426,7 @@ class ChatbotService:
             # [5단계] 상태 전환 조건 체크 (우선순위: 턴 수 → 질문 소진 → 점수)
             bridge_prompt_added = False
             
-            if previous_state != 'INITIAL_SETUP' and previous_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']:
+            if previous_state != 'INITIAL_SETUP' and previous_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING']:
                 # 조건 1: 턴 수 초과
                 if self.state_turns >= self.max_state_turns:
                     # 다음 상태로 전환
@@ -475,14 +511,47 @@ class ChatbotService:
                     if not special_instruction:
                         special_instruction = "\n[INITIAL_SETUP 설득]: 야! 난 네 친구잖아. PD가 된 친구를 도와준다고 생각해줘. 그래도 정말 안 되면 어쩔 수 없지만ㅠㅠ **다른 연애 이야기는 절대 안 돼!** 우리 기획은 오직 '전 애인 X와의 미련도'만 분석하는 거라서, 꼭 그 X 얘기만 들어야 해. 하나만이라도 괜찮아, 그냥 어떤 순간이었는지만 얘기해줘! 절대 다른 주제로 대화를 바꾸지 마."
             
+            # [X 스토리 부재 감지] - INITIAL_SETUP 이후 또는 초반 대화 중
+            if self._detect_no_ex_story(user_message) and self.dialogue_state != 'NO_EX_CLOSING':
+                print("[FLOW_CONTROL] X 스토리 부재 감지. 친구 위로 후 종료.")
+                
+                # 상태를 종료 상태로 전환
+                self.dialogue_state = 'NO_EX_CLOSING'
+                
+                # 친구 위로 프롬프트
+                special_instruction = """
+[X 스토리 부재 - 친구 위로 모드]
+
+사용자가 전애인(X)이 없다고 말했습니다. 
+환승연애 AI 데모는 연애 경험만 분석할 수 있다는 점을 친구답게 설명하고,
+따뜻하게 위로하며 대화를 마무리하세요.
+
+**필수 포함 내용:**
+1. "미안, 환승연애 데모 AI는 연애 경험만 받는대 ㅜㅜ" (기획 한계 설명)
+2. "내가 너 사랑하는 거 알지?" (친구로서의 애정 표현)
+3. "전 애인 없어도 넌 내가 있으니까 괜찮아" (위로)
+4. "같이 술 먹으러 가자 ㅎㅎ" 또는 유사한 친구다운 제안 (자연스러운 마무리)
+
+**톤:**
+- 미안해하지만 무겁지 않게
+- 친구로서 진심 어린 위로
+- 가볍고 따뜻한 마무리
+
+**예시:**
+"아 그렇구나ㅠㅠ 미안해, 사실 환승연애 데모 AI가 연애 경험만 받는대... 
+내가 PD 일 때문에 너한테 이런 질문까지 하게 돼서 좀 미안하다. 
+근데 있잖아, 내가 너 사랑하는 거 알지? 전 애인 없어도 넌 내가 있으니까 괜찮아! 
+오늘 저녁에 같이 술 먹으러 가자 ㅎㅎ 내가 쏠게~"
+"""
+            
             # 조기 종료: 미련도 낮을 때
-            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING']:
+            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING', 'NO_EX_CLOSING']:
                 self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                 if not special_instruction:
                     special_instruction = "\n[조기 종료]: 와, 너 완전히 정리했네! 그럼 여기서 인터뷰 마무리하고 AI 분석 리포트 바로 볼래?"
             
             # 총 턴 수 임계값
-            if self.turn_count >= self.max_total_turns and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']:
+            if self.turn_count >= self.max_total_turns and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING']:
                 self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                 if not special_instruction:
                     special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
@@ -549,11 +618,13 @@ class ChatbotService:
             else:
                 reply = "AI 연애 분석 에이전트 데모 모드야. 환경변수 설정 후 더 정교한 분석이 가능해!"
             
-            # [8단계] 감정 리포트 생성 (특정 조건)
+            # [8단계] 감정 리포트 생성 (특정 조건, NO_EX_CLOSING 상태에서는 생략)
             is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
             is_transition_state = self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']
             
-            if is_report_request or is_transition_state:
+            if self.dialogue_state == 'NO_EX_CLOSING':
+                print("[FLOW_CONTROL] NO_EX_CLOSING 상태: 리포트 생성 생략")
+            elif is_report_request or is_transition_state:
                 if self.dialogue_state == 'CLOSING':
                     if analysis_results['total'] > 0:
                         report = self.report_generator.generate_emotion_report(analysis_results, username)
