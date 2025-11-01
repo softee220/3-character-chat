@@ -110,56 +110,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 class ChatbotService:
-    """
-    챗봇 서비스 클래스
-    
-    이 클래스는 챗봇의 모든 AI 로직을 캡슐화합니다.
-    
-    주요 책임:
-    1. OpenAI API 관리
-    2. ChromaDB 벡터 검색
-    3. LangChain 메모리 관리
-    4. 응답 생성 파이프라인
-    
-    직접 구현해야 할 메서드:
-    - __init__: 모든 구성 요소 초기화
-    - _load_config: 설정 파일 로드
-    - _init_chromadb: 벡터 데이터베이스 초기화
-    - _create_embedding: 텍스트 → 벡터 변환
-    - _search_similar: RAG 검색 수행 (핵심!)
-    - _build_prompt: 프롬프트 구성
-    - generate_response: 최종 응답 생성 (모든 로직 통합)
-    """
+
     
     def __init__(self):
-        """
-        챗봇 서비스 초기화
-        
-        TODO: 다음 구성 요소들을 초기화하세요
-        
-        1. Config 로드
-           - config/chatbot_config.json 파일 읽기
-           - 챗봇 이름, 설명, 시스템 프롬프트 등
-        
-        2. OpenAI Client
-           - API 키: os.getenv("OPENAI_API_KEY")
-           - from openai import OpenAI
-           - self.client = OpenAI(api_key=...)
-        
-        3. ChromaDB
-           - 텍스트 임베딩 컬렉션 연결
-           - 경로: static/data/chatbot/chardb_embedding
-           - self.collection = ...
-        
-        4. LangChain Memory (선택)
-           - ConversationSummaryBufferMemory
-           - 대화 기록 관리
-           - self.memory = ...
-        
-        힌트:
-        - ChromaDB: import chromadb
-        - LangChain: # from langchain_community.memory import ConversationSummaryBufferMemory  # Not available in current LangChain version
-        """
+ 
         print("[ChatbotService] 초기화 중... ")
         
         # 1. Config 로드
@@ -193,38 +147,16 @@ class ChatbotService:
         self.emotion_analyzer = EmotionAnalyzer()
         self.report_generator = ReportGenerator()
         
+        # 6. DSM 상태 관리 변수 초기화
+        self.dialogue_state = 'INTRO'  # 대화 상태 (INTRO, RECALL_ATTACHMENT, RECALL_REGRET, etc.)
+        self.turn_count = 0  # 대화 턴 수 추적
+        self.stop_request_count = 0  # 사용자 대화 중단 요청 횟수
+        
         print("[ChatbotService] 초기화 완료")
     
     
     def _build_prompt(self, user_message: str, context: str = None, username: str = "사용자"):
-        """
-        LLM 프롬프트 구성
-        
-        Args:
-            user_message (str): 사용자 메시지
-            context (str): RAG 검색 결과 (선택)
-            username (str): 사용자 이름
-        
-        Returns:
-            str: 최종 프롬프트
-        
-        TODO:
-        1. 시스템 프롬프트 가져오기 (config에서)
-        2. RAG 컨텍스트 포함 여부 결정
-        3. 대화 기록 포함 (선택)
-        4. 최종 프롬프트 문자열 반환
-        
-        프롬프트 예시:
-        ```
-        당신은 서강대학교 선배 김서강입니다.
-        신입생들에게 학교 생활을 알려주는 역할을 합니다.
-        
-        [참고 정보]  ← RAG 컨텍스트가 있을 때만
-        학식은 곤자가가 맛있어. 돈까스가 인기야.
-        
-        사용자: 학식 추천해줘
-        ```
-        """
+ 
         # 시스템 프롬프트 구성
         system_prompt = self.config.get('system_prompt', {})
         base_prompt = system_prompt.get('base', '당신은 환승연애팀 막내 PD가 된 친구입니다.')
@@ -257,6 +189,12 @@ class ChatbotService:
         prompt_parts.append("- 연애 이야기를 자연스럽게 이끌어내되, 무리하게 끌어내지 마")
         prompt_parts.append("- 이모티콘은 최소한으로 사용해")
         
+        # Redirection Rule 및 주제 이탈 방지 지침 추가
+        prompt_parts.append("\n[PD 친구 규칙 강화]:")
+        prompt_parts.append("- 너는 환승연애 PD 친구로서, 오직 전애인(X)과의 연애 이야기에만 집중해야 해.")
+        prompt_parts.append("\n[주제 복귀 규칙]:")
+        prompt_parts.append("- 사용자가 현애인 또는 전애인과 무관한 주제(일반 일상, 미래 계획 등)로 대화가 이탈하면, 'AI 분석 범위 밖' 또는 '기획안 데이터'를 핑계로 친근하게 대화를 전애인 이야기로 복귀시켜야 해. 절대로 딱딱하게 끊거나 강압적으로 들리면 안 돼.")
+        
         # 사용자 메시지 추가
         prompt_parts.append(f"\n{username}: {user_message}")
         
@@ -264,126 +202,7 @@ class ChatbotService:
     
     
     def generate_response(self, user_message: str, username: str = "사용자") -> dict:
-        """
-        사용자 메시지에 대한 챗봇 응답 생성
         
-        Args:
-            user_message (str): 사용자 입력
-            username (str): 사용자 이름
-        
-        Returns:
-            dict: {
-                'reply': str,       # 챗봇 응답 텍스트
-                'image': str|None   # 이미지 경로 (선택)
-            }
-        
-        
-        TODO: 전체 응답 생성 파이프라인 구현
-        
-        
-        ═══════════════════════════════════════════════════
-        📋 구현 단계
-        ═══════════════════════════════════════════════════
-        
-        [1단계] 초기 메시지 처리
-        
-            if user_message.strip().lower() == "init":
-                # 첫 인사말 반환
-                bot_name = self.config.get('name', '챗봇')
-                return {
-                    'reply': f"안녕! 나는 {bot_name}이야.",
-                    'image': None
-                }
-        
-        
-        [2단계] RAG 검색 수행
-        
-            context, similarity, metadata = self._search_similar(
-                query=user_message,
-                threshold=0.45,
-                top_k=5
-            )
-            
-            has_context = (context is not None)
-        
-        
-        [3단계] 프롬프트 구성
-        
-            prompt = self._build_prompt(
-                user_message=user_message,
-                context=context,
-                username=username
-            )
-        
-        
-        [4단계] LLM API 호출
-        
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # 또는 gpt-4
-                messages=[
-                    {"role": "system", "content": "시스템 프롬프트"},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-            
-            reply = response.choices[0].message.content
-        
-        
-        [5단계] 메모리 저장 (선택)
-        
-            if self.memory:
-                self.memory.save_context(
-                    {"input": user_message},
-                    {"output": reply}
-                )
-        
-        
-        [6단계] 응답 반환
-        
-            return {
-                'reply': reply,
-                'image': None  # 이미지 검색 로직 추가 가능
-            }
-        
-        
-        ═══════════════════════════════════════════════════
-        💡 핵심 포인트
-        ═══════════════════════════════════════════════════
-        
-        1. RAG 활용
-           - 검색 결과가 있으면 프롬프트에 포함
-           - 없으면 일반 대화 모드
-        
-        2. 에러 처리
-           - try-except로 API 오류 처리
-           - 실패 시 기본 응답 반환
-        
-        3. 로깅
-           - 각 단계마다 print()로 상태 출력
-           - 디버깅에 매우 유용!
-        
-        4. 확장성
-           - 이미지 검색 로직 추가 가능
-           - 감정 분석 추가 가능
-           - 다중 언어 지원 가능
-        
-        
-        ═══════════════════════════════════════════════════
-        🐛 디버깅 예시
-        ═══════════════════════════════════════════════════
-        
-        print(f"\n{'='*50}")
-        print(f"[USER] {username}: {user_message}")
-        print(f"[RAG] Context found: {has_context}")
-        if has_context:
-            print(f"[RAG] Similarity: {similarity:.4f}")
-            print(f"[RAG] Context: {context[:100]}...")
-        print(f"[LLM] Calling API...")
-        print(f"[BOT] {reply}")
-        print(f"{'='*50}\n")
-        """
         
         # 여기에 전체 파이프라인 구현
         # 위의 단계를 참고하여 자유롭게 설계하세요
@@ -395,12 +214,21 @@ class ChatbotService:
             # [1단계] 초기 메시지 처리
             if user_message.strip().lower() == "init":
                 bot_name = self.config.get('name', '환승연애 PD 친구')
+                # 도입부: INTRO 상태로 시작
+                self.dialogue_state = 'INTRO'
+                self.turn_count = 0
+                self.stop_request_count = 0
                 return {
-                    'reply': f"야, {username}! 나 이번에 환승연애 팀 막내 PD 됐잖아. 근데 지금 새 프로그램 기획 중인데, 솔직히 사람들 연애 얘기 좀 모으고 있어. 너 전 연애 얘기 좀 해줄 수 있어?",
+                    'reply': f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 ‘X와의 미련도 측정 AI’ 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지마마 그냥 친구한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?",
+
                     'image': None
                 }
             
+            # 일반 메시지의 경우 turn_count 증가
+            self.turn_count += 1
+            
             # [2단계] RAG 검색 수행
+            #우리는 RAG 검색 매 질문마다 사용 하지 않음 불필요 
             context, similarity, metadata = self.rag_service.search_similar(
                 query=user_message,
                 threshold=0.45,
@@ -425,6 +253,7 @@ class ChatbotService:
             )
             
             # [5단계] LLM API 호출
+            # 불필요한 중복인가?
             if self.client:
                 print(f"[LLM] Calling API...")
                 response = self.client.chat.completions.create(
