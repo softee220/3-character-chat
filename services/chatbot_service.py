@@ -96,6 +96,9 @@ import re
 from typing import Dict, List, Tuple, Optional
 import chromadb
 from openai import OpenAI
+from .emotion_analyzer import EmotionAnalyzer, ReportGenerator
+from .rag_service import RAGService
+from .config_loader import ConfigLoader
 # from langchain_community.memory import ConversationSummaryBufferMemory  # Not available in current LangChain version
 # from langchain.llms import OpenAI as LangChainOpenAI  # Not available in current LangChain version
 
@@ -160,7 +163,7 @@ class ChatbotService:
         print("[ChatbotService] 초기화 중... ")
         
         # 1. Config 로드
-        self.config = self._load_config()
+        self.config = ConfigLoader.load_config()
         
         # 2. OpenAI Client 초기화
         api_key = os.getenv("OPENAI_API_KEY")
@@ -170,8 +173,8 @@ class ChatbotService:
             self.client = None
             print("[WARNING] OPENAI_API_KEY 미설정: LLM 호출을 비활성화합니다.")
         
-        # 3. ChromaDB 초기화
-        self.collection = self._init_chromadb()
+        # 3. RAG 서비스 초기화
+        self.rag_service = RAGService(self.client)
         
         # 4. LangChain Memory 초기화 (API 키가 있을 때만)
         self.memory = None
@@ -186,403 +189,11 @@ class ChatbotService:
             except Exception as e:
                 print(f"[WARNING] 메모리 초기화 실패: {e}")
         
-        # 5. 연애 감정 분석을 위한 키워드 로드
-        self.emotion_keywords = self._load_emotion_keywords()
+        # 5. 감정 분석 서비스 초기화
+        self.emotion_analyzer = EmotionAnalyzer()
+        self.report_generator = ReportGenerator()
         
         print("[ChatbotService] 초기화 완료")
-    
-    def _load_emotion_keywords(self) -> Dict[str, List[str]]:
-        """연애 감정 분석을 위한 키워드 로드"""
-        keywords = {
-            "attachment_high": ["아직도", "여전히", "지금도", "요즘도", "그리워", "보고싶어", "생각나"],
-            "attachment_low": ["이제", "더 이상", "신경 안 써", "관심 없어", "잊었어", "지나간 일"],
-            "regret_high": ["미안해", "아쉬워", "후회돼", "잘못했어", "다시 돌아가면", "더 잘했으면"],
-            "regret_low": ["후회 없어", "그때가 최선", "맞는 선택", "다시 돌아가도"],
-            "unresolved_high": ["이해가 안 돼", "궁금해", "명확하지 않아", "끝나지 않은", "해결되지 않은"],
-            "unresolved_low": ["이해했어", "정리됐어", "명확해", "해결됐어", "끝났어"],
-            "comparison_high": ["비교해", "그 사람만큼은", "이전과 비교하면", "새로운 사람과"],
-            "comparison_low": ["비교하지 않아", "각자 다른", "독립적으로", "별개로"],
-            "avoidance_high": ["피하고 싶어", "회피하고 싶어", "얘기 하기 싫어", "만나기 싫어"],
-            "approach_high": ["만나고 싶어", "연락하고 싶어", "자연스럽게", "괜찮아"]
-        }
-        return keywords
-    
-    def _analyze_attachment_level(self, user_message: str) -> float:
-        """애착도 분석 (0-100)"""
-        high_keywords = self.emotion_keywords["attachment_high"]
-        low_keywords = self.emotion_keywords["attachment_low"]
-        
-        high_score = sum(1 for keyword in high_keywords if keyword in user_message)
-        low_score = sum(1 for keyword in low_keywords if keyword in user_message)
-        
-        if high_score > 0 and low_score == 0:
-            return min(80 + (high_score * 5), 100)
-        elif low_score > 0 and high_score == 0:
-            return max(20 - (low_score * 5), 0)
-        else:
-            return 50  # 중립
-    
-    def _analyze_regret_level(self, user_message: str) -> float:
-        """후회도 분석 (0-100)"""
-        high_keywords = self.emotion_keywords["regret_high"]
-        low_keywords = self.emotion_keywords["regret_low"]
-        
-        high_score = sum(1 for keyword in high_keywords if keyword in user_message)
-        low_score = sum(1 for keyword in low_keywords if keyword in user_message)
-        
-        if high_score > 0 and low_score == 0:
-            return min(80 + (high_score * 5), 100)
-        elif low_score > 0 and high_score == 0:
-            return max(20 - (low_score * 5), 0)
-        else:
-            return 50  # 중립
-    
-    def _analyze_unresolved_feelings(self, user_message: str) -> float:
-        """미해결감 분석 (0-100)"""
-        high_keywords = self.emotion_keywords["unresolved_high"]
-        low_keywords = self.emotion_keywords["unresolved_low"]
-        
-        high_score = sum(1 for keyword in high_keywords if keyword in user_message)
-        low_score = sum(1 for keyword in low_keywords if keyword in user_message)
-        
-        if high_score > 0 and low_score == 0:
-            return min(80 + (high_score * 5), 100)
-        elif low_score > 0 and high_score == 0:
-            return max(20 - (low_score * 5), 0)
-        else:
-            return 50  # 중립
-    
-    def _analyze_comparison_standard(self, user_message: str) -> float:
-        """비교 기준 분석 (0-100)"""
-        high_keywords = self.emotion_keywords["comparison_high"]
-        low_keywords = self.emotion_keywords["comparison_low"]
-        
-        high_score = sum(1 for keyword in high_keywords if keyword in user_message)
-        low_score = sum(1 for keyword in low_keywords if keyword in user_message)
-        
-        if high_score > 0 and low_score == 0:
-            return min(80 + (high_score * 5), 100)
-        elif low_score > 0 and high_score == 0:
-            return max(20 - (low_score * 5), 0)
-        else:
-            return 50  # 중립
-    
-    def _analyze_avoidance_approach(self, user_message: str) -> float:
-        """회피/접근 분석 (0-100)"""
-        avoidance_keywords = self.emotion_keywords["avoidance_high"]
-        approach_keywords = self.emotion_keywords["approach_high"]
-        
-        avoidance_score = sum(1 for keyword in avoidance_keywords if keyword in user_message)
-        approach_score = sum(1 for keyword in approach_keywords if keyword in user_message)
-        
-        if avoidance_score > approach_score:
-            return min(80 + (avoidance_score * 5), 100)  # 회피
-        elif approach_score > avoidance_score:
-            return max(20 - (approach_score * 5), 0)  # 접근
-        else:
-            return 50  # 중립
-    
-    def _calculate_regret_index(self, user_message: str) -> Dict[str, float]:
-        """종합 미련도 지수 계산"""
-        attachment = self._analyze_attachment_level(user_message)
-        regret = self._analyze_regret_level(user_message)
-        unresolved = self._analyze_unresolved_feelings(user_message)
-        comparison = self._analyze_comparison_standard(user_message)
-        avoidance = self._analyze_avoidance_approach(user_message)
-        
-        # 가중치 적용
-        total_regret = (
-            attachment * 0.3 +      # 30%
-            regret * 0.25 +         # 25%
-            unresolved * 0.2 +      # 20%
-            comparison * 0.15 +    # 15%
-            avoidance * 0.1         # 10%
-        )
-        
-        return {
-            "total": total_regret,
-            "attachment": attachment,
-            "regret": regret,
-            "unresolved": unresolved,
-            "comparison": comparison,
-            "avoidance": avoidance
-        }
-    
-    def _generate_emotion_report(self, analysis_results: Dict[str, float], username: str) -> str:
-        """감정 리포트 생성"""
-        total = analysis_results["total"]
-        
-        # 미련도 지수별 해석
-        if total <= 20:
-            level = "완전 정리 단계"
-            emoji = "💚"
-            description = "이미 마음의 정리가 완전히 끝난 상태예요. 과거를 돌아보지 않고 새로운 시작을 준비하고 있어요."
-        elif total <= 40:
-            level = "잔잔한 여운 단계"
-            emoji = "💛"
-            description = "겉으로는 다 끝난 듯 보이지만, 그 시절의 따뜻함을 여전히 간직하고 있어요. '그 사람'보다는 '그때의 나'를 그리워하는 상태예요."
-        elif total <= 60:
-            level = "적당한 미련 단계"
-            emoji = "🧡"
-            description = "아직도 그 사람에 대한 감정이 남아있어요. 완전히 잊지는 못했지만, 새로운 시작을 위한 준비는 되어있어요."
-        elif total <= 80:
-            level = "강한 미련 단계"
-            emoji = "❤️"
-            description = "아직도 그 사람에 대한 강한 감정이 남아있어요. 새로운 관계를 시작하기에는 아직 시간이 더 필요할 것 같아요."
-        else:
-            level = "매우 강한 미련 단계"
-            emoji = "💔"
-            description = "아직도 그 사람에 대한 매우 강한 감정이 남아있어요. 완전한 정리가 필요해 보여요."
-        
-        # 주요 감정 키워드 추출
-        keywords = []
-        if analysis_results["attachment"] > 60:
-            keywords.append("#그리움")
-        if analysis_results["regret"] > 60:
-            keywords.append("#후회")
-        if analysis_results["unresolved"] > 60:
-            keywords.append("#미해결감")
-        if analysis_results["comparison"] > 60:
-            keywords.append("#비교")
-        if analysis_results["avoidance"] > 60:
-            keywords.append("#회피")
-        
-        if not keywords:
-            keywords = ["#성장", "#이해", "#정리"]
-        
-        report = f"""[{username}님의 연애 감정 리포트]
-
-1️⃣ 주요 감정 키워드
-{' '.join(keywords)}
-
-2️⃣ 감정 상태 분석
-"{description}"
-
-3️⃣ 미련도 지수
-{emoji} **{int(total)}% — {level}**
-
-4️⃣ 개인화된 메시지
-"""
-        
-        # 개인화된 조언 추가
-        if total <= 20:
-            report += "과거를 아름답게 정리하고 새로운 시작을 준비하고 있는 모습이 정말 멋져요. 이제 진짜 새로운 사랑을 만날 준비가 되어있어요!"
-        elif total <= 40:
-            report += "아직도 그 시절의 따뜻함을 간직하고 있지만, 이제는 '그 사람'보다는 '그때의 나'를 그리워하고 있어요. 이는 정말 건강한 감정이에요!"
-        elif total <= 60:
-            report += "아직도 그 사람에 대한 감정이 남아있지만, 이제는 새로운 시작을 위한 준비가 되어있어요. 조금 더 시간을 갖고 천천히 나아가세요!"
-        elif total <= 80:
-            report += "아직도 그 사람에 대한 강한 감정이 남아있어요. 새로운 관계를 시작하기에는 아직 시간이 더 필요할 것 같아요. 조금 더 기다려보세요!"
-        else:
-            report += "아직도 그 사람에 대한 매우 강한 감정이 남아있어요. 완전한 정리가 필요해 보여요. 전문가의 도움을 받는 것도 좋은 방법이에요!"
-        
-        return report
-    
-    
-    def _load_config(self):
-        """
-        설정 파일 로드
-        
-        TODO: config/chatbot_config.json 읽어서 반환
-        
-        반환값 예시:
-        {
-            "name": "김서강",
-            "character": {...},
-            "system_prompt": {...}
-        }
-        """
-        config_path = BASE_DIR / "config" / "chatbot_config.json"
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            print(f"[WARNING] 설정 파일을 찾을 수 없습니다: {config_path}")
-            return {
-                "name": "환승연애 PD 친구",
-                "description": "환승연애팀 막내 PD 친구",
-                "system_prompt": {
-                    "base": "당신은 환승연애팀 막내 PD가 된 친구입니다.",
-                    "rules": ["친근하게 대화하세요", "연애 이야기를 자연스럽게 이끌어내세요"]
-                }
-            }
-    
-    
-    def _init_chromadb(self):
-        """
-        ChromaDB 초기화 및 컬렉션 반환
-        
-        TODO: 
-        1. PersistentClient 생성
-        2. 컬렉션 가져오기 (이름: "rag_collection")
-        3. 컬렉션 반환
-        
-        힌트:
-        - import chromadb
-        - db_path = BASE_DIR / "static/data/chatbot/chardb_embedding"
-        - client = chromadb.PersistentClient(path=str(db_path))
-        - collection = client.get_collection(name="rag_collection")
-        """
-        db_path = BASE_DIR / "static/data/chatbot/chardb_embedding"
-        db_path.mkdir(parents=True, exist_ok=True)
-        
-        client = None
-        try:
-            client = chromadb.PersistentClient(path=str(db_path))
-            try:
-                collection = client.get_collection(name="rag_collection")
-                print(f"[ChromaDB] 컬렉션 연결 성공: {collection.name}")
-                return collection
-            except Exception:
-                # 없으면 생성
-                collection = client.create_collection(name="rag_collection")
-                print(f"[ChromaDB] 새 컬렉션 생성: {collection.name}")
-                return collection
-        except Exception as e:
-            print(f"[WARNING] ChromaDB 초기화 실패: {e}")
-            return None
-    
-    
-    def _create_embedding(self, text: str) -> list:
-        """
-        텍스트를 임베딩 벡터로 변환
-        
-        Args:
-            text (str): 임베딩할 텍스트
-        
-        Returns:
-            list: 3072차원 벡터 (text-embedding-3-large 모델)
-        
-        TODO:
-        1. OpenAI API 호출
-        2. embeddings.create() 사용
-        3. 벡터 반환
-        
-        힌트:
-        - response = self.client.embeddings.create(
-        -     input=[text],
-        -     model="text-embedding-3-large"
-        - )
-        - return response.data[0].embedding
-        """
-        if not self.client:
-            return []
-        try:
-            response = self.client.embeddings.create(
-                input=[text],
-                model="text-embedding-3-large"
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            print(f"[ERROR] 임베딩 생성 실패: {e}")
-            return []
-    
-    
-    def _search_similar(self, query: str, threshold: float = 0.45, top_k: int = 5):
-        """
-        RAG 검색: 유사한 문서 찾기 (핵심 메서드!)
-        
-        Args:
-            query (str): 검색 질의
-            threshold (float): 유사도 임계값 (0.3-0.5 권장)
-            top_k (int): 검색할 문서 개수
-        
-        Returns:
-            tuple: (document, similarity, metadata) 또는 (None, None, None)
-        
-        TODO: RAG 검색 알고리즘 구현
-        
-        1. 쿼리 임베딩 생성
-           query_embedding = self._create_embedding(query)
-        
-        2. ChromaDB 검색
-           results = self.collection.query(
-               query_embeddings=[query_embedding],
-               n_results=top_k,
-               include=["documents", "distances", "metadatas"]
-           )
-        
-        3. 유사도 계산 및 필터링
-           for doc, dist, meta in zip(...):
-               similarity = 1 / (1 + dist)  ← 유사도 공식!
-               if similarity >= threshold:
-                   ...
-        
-        4. 가장 유사한 문서 반환
-           return (best_document, best_similarity, metadata)
-        
-        
-        💡 핵심 개념:
-        
-        - Distance vs Similarity
-          · ChromaDB는 "거리(distance)"를 반환 (작을수록 유사)
-          · 우리는 "유사도(similarity)"로 변환 (클수록 유사)
-          · 변환 공식: similarity = 1 / (1 + distance)
-        
-        - Threshold
-          · 0.3: 매우 느슨한 매칭 (관련성 낮아도 OK)
-          · 0.45: 적당한 매칭 (추천!)
-          · 0.7: 매우 엄격한 매칭 (정확한 답만)
-        
-        - Top K
-          · 5-10개 정도 검색
-          · 그 중 threshold 넘는 것만 사용
-        
-        
-        🐛 디버깅 팁:
-        - print()로 검색 결과 확인
-        - 유사도 값 확인 (너무 낮으면 threshold 조정)
-        - 검색된 문서 내용 확인
-        """
-        if not self.collection:
-            print("[WARNING] ChromaDB 컬렉션이 없습니다.")
-            return None, None, None
-        
-        try:
-            # 1. 쿼리 임베딩 생성 (LLM 비활성화 시 RAG 생략)
-            if not self.client:
-                return None, None, None
-            query_embedding = self._create_embedding(query)
-            if not query_embedding:
-                return None, None, None
-            
-            # 2. ChromaDB 검색
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k,
-                include=["documents", "distances", "metadatas"]
-            )
-            
-            # 3. 유사도 계산 및 필터링
-            best_document = None
-            best_similarity = 0
-            best_metadata = None
-            
-            if results['documents'] and results['documents'][0]:
-                for doc, dist, meta in zip(
-                    results['documents'][0], 
-                    results['distances'][0], 
-                    results['metadatas'][0]
-                ):
-                    similarity = 1 / (1 + dist)  # 유사도 공식
-                    print(f"[RAG] 유사도: {similarity:.4f}, 거리: {dist:.4f}")
-                    
-                    if similarity >= threshold and similarity > best_similarity:
-                        best_document = doc
-                        best_similarity = similarity
-                        best_metadata = meta
-            
-            if best_document:
-                print(f"[RAG] 최고 유사도: {best_similarity:.4f}")
-                print(f"[RAG] 문서: {best_document[:100]}...")
-                return best_document, best_similarity, best_metadata
-            else:
-                print(f"[RAG] 임계값({threshold}) 이상의 유사한 문서를 찾지 못했습니다.")
-                return None, None, None
-                
-        except Exception as e:
-            print(f"[ERROR] RAG 검색 실패: {e}")
-            return None, None, None
     
     
     def _build_prompt(self, user_message: str, context: str = None, username: str = "사용자"):
@@ -790,7 +401,7 @@ class ChatbotService:
                 }
             
             # [2단계] RAG 검색 수행
-            context, similarity, metadata = self._search_similar(
+            context, similarity, metadata = self.rag_service.search_similar(
                 query=user_message,
                 threshold=0.45,
                 top_k=5
@@ -803,7 +414,7 @@ class ChatbotService:
                 print(f"[RAG] Context: {context[:100]}...")
             
             # [3단계] 연애 감정 분석 수행
-            analysis_results = self._calculate_regret_index(user_message)
+            analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
             print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
             
             # [4단계] 프롬프트 구성
@@ -833,7 +444,7 @@ class ChatbotService:
             # [6단계] 감정 리포트 생성 (특정 조건에서)
             if any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"]):
                 if analysis_results['total'] > 0:  # 분석 결과가 있을 때만
-                    report = self._generate_emotion_report(analysis_results, username)
+                    report = self.report_generator.generate_emotion_report(analysis_results, username)
                     reply += f"\n\n{report}"
             
             # [7단계] 메모리 저장
