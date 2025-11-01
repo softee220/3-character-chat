@@ -226,23 +226,28 @@ class ChatbotService:
         """
         prompt_parts = []
         
+        # 최근 대화 요약 (반복 방지)
+        if len(self.dialogue_history) >= 6:
+            recent_turns = self.dialogue_history[-6:]
+            recent_summary = "\n".join([f"{item['role']}: {item['content'][:50]}..." for item in recent_turns])
+            prompt_parts.append(f"[최근 대화 요약 - 이미 물어본 질문은 절대 반복하지 마]:\n{recent_summary}\n")
+        
         # 상태별 꼬리 질문 지시
-            # 상태별 꼬리 질문 지시
         if self.dialogue_state == 'RECALL_ATTACHMENT':
             prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자가 언급한 감정과 관련된 다른 순간이나 경험이 있었는지 자연스럽게 궁금해하며 물어봐.")
+            prompt_parts.append("- 사용자가 언급한 감정과 관련된 다른 순간이나 경험이 있었는지 자연스럽게 궁금해하며 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
         elif self.dialogue_state == 'RECALL_REGRET':
             prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자의 답변에서 궁금한 부분이나 자세히 듣고 싶은 부분을 자연스럽게 물어봐.")
+            prompt_parts.append("- 사용자의 답변에서 궁금한 부분이나 자세히 듣고 싶은 부분을 자연스럽게 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
         elif self.dialogue_state == 'RECALL_UNRESOLVED':
             prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자 답변에서 아직 잘 모르겠는 부분이나 궁금한 장면에 대해 자연스럽게 물어봐.")
+            prompt_parts.append("- 사용자 답변에서 아직 잘 모르겠는 부분이나 궁금한 장면에 대해 자연스럽게 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
         elif self.dialogue_state == 'RECALL_COMPARISON':
             prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐.")
+            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
         elif self.dialogue_state == 'RECALL_AVOIDANCE':
             prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐.")
+            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
         
         
         # 특별 지시사항 추가 (브릿지, redirect 등)
@@ -277,7 +282,16 @@ class ChatbotService:
                 return {'reply': reply, 'image': None}
             
             # [2단계] 중단 요청 처리 (turn_count 증가 전)
-            if '그만할래' in user_message or '그만 말하고 싶어' in user_message:
+            stop_keywords = [
+                '그만', '그만할래', '그만하라고', '그만하자', '그만해', '그만 말',
+                '질문 그만', '질문 안 돼', '질문 좀', '질문 싫어', '질문 많아', '너무 질문', '질문 많',
+                '중단', '멈춰', '끝내', '끝남', '그만 듣고 싶어',
+                '대화 그만', '이야기 그만', '이야기 안 해',
+                '더는 안 해', '이제 안 해', '안 하고 싶어', '하기 싫어'
+            ]
+            is_stop_request = any(keyword in user_message for keyword in stop_keywords)
+            
+            if is_stop_request:
                 self.stop_request_count += 1
                 print(f"[FLOW_CONTROL] 중단 요청 {self.stop_request_count}회")
                 
@@ -319,6 +333,17 @@ class ChatbotService:
                             recent_keyword = "헤어진 계기"
                     
                     special_instruction = f"\n[주제 이탈 Redirect]: 야, {username}아! 네 일상 얘기도 좋긴 한데ㅋㅋ 나 지금 이거 기획안에 쓸 데이터 모으는 중이잖아. 혹시 아까 네가 얘기했던 **[{recent_keyword}]**에 대해 좀 더 자세히 말해줄 수 있어? 그래야 AI가 정확하게 분석할 수 있대!"
+                else:
+                    # 일반적인 주제 이탈 (날씨, 음식 등) - 짧은 메시지만 체크
+                    off_topic_keywords = ['날씨', '음식', '먹', '오늘', '내일', '어제', '시간', '뭐해', '어디']
+                    if any(kw in user_message for kw in off_topic_keywords) and len(user_message) < 20:
+                        # 마지막 질문 다시 상기
+                        if len(self.dialogue_history) >= 2:
+                            last_bot_msg = self.dialogue_history[-1].get('content', '')
+                            # 마지막 질문 추출 시도
+                            if '?' in last_bot_msg:
+                                last_question = last_bot_msg.split('?')[0].split('!')[-1].strip() + '?'
+                                special_instruction = f"\n[주제 이탈 Redirect]: 아 그건 나중에 얘기하고ㅋㅋ 아까 물어봤던 거 있잖아! {last_question}"
             
             # [턴 트래킹] 상태 전환 감지 및 state_turns 관리
             previous_state = self.dialogue_state
@@ -349,11 +374,18 @@ class ChatbotService:
                             # 고정 질문을 던졌으므로 다음 턴에는 꼬리 질문 허용
                             self.tail_question_used[self.dialogue_state] = True
                     else:
-                        # 꼬리 질문 단계 - 꼬리 질문 지시는 _build_prompt에서 자동으로 추가됨
-                        print(f"[QUESTION] {self.dialogue_state}: 꼬리 질문 허용 중")
-                        # 꼬리 질문 완료 후 다음 고정 질문으로 이동
+                        # 꼬리 질문 단계 - 이미 한 번 허용했으므로 이제 다음 고정 질문으로
+                        print(f"[QUESTION] {self.dialogue_state}: 꼬리 질문 완료, 다음 고정 질문으로 이동")
                         self._mark_question_used(self.dialogue_state)
                         self.tail_question_used[self.dialogue_state] = False
+                        
+                        # 즉시 다음 고정 질문 던지기
+                        if not self._is_questions_exhausted(self.dialogue_state):
+                            next_question = self._get_next_question(self.dialogue_state)
+                            if next_question:
+                                special_instruction = f"\n[다음 고정 질문]: 이전 답변에 짧게 공감하고, 다음 질문으로 자연스럽게 넘어가세요: {next_question}"
+                                print(f"[QUESTION] {self.dialogue_state}: 다음 고정 질문 #{self.question_indices.get(self.dialogue_state, 0)} 던짐")
+                                self.tail_question_used[self.dialogue_state] = True
             
             # [5단계] 상태 전환 조건 체크 (우선순위: 턴 수 → 질문 소진 → 점수)
             bridge_prompt_added = False
