@@ -28,7 +28,7 @@
   "flow_control": {
     "turn_thresholds": {
       "early_exit_turn_count": 5,
-      "max_total_turns": 20,
+      "max_total_turns": 25,
       "max_state_turns": 5
     },
     "emotion_thresholds": {

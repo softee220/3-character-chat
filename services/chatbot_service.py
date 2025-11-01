@@ -70,7 +70,8 @@ class ChatbotService:
         
         # 턴 수 임계값
         self.early_exit_turn_count = turn_thresholds.get('early_exit_turn_count', 5)
-        self.max_total_turns = turn_thresholds.get('max_total_turns', 10)
+        self.max_total_turns = turn_thresholds.get('max_total_turns', 25) 
+        # 하드 코딩해야할듯....
         self.max_state_turns = turn_thresholds.get('max_state_turns', 5)
         
         # 감정 임계값
