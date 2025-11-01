@@ -92,6 +92,15 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import json
+import re
+from typing import Dict, List, Tuple, Optional
+import chromadb
+from openai import OpenAI
+from .emotion_analyzer import EmotionAnalyzer, ReportGenerator
+from .rag_service import RAGService
+from .config_loader import ConfigLoader
+# from langchain_community.memory import ConversationSummaryBufferMemory  # Not available in current LangChain version
+# from langchain.llms import OpenAI as LangChainOpenAI  # Not available in current LangChain version
 
 # 환경변수 로드
 load_dotenv()
@@ -149,135 +158,42 @@ class ChatbotService:
         
         힌트:
         - ChromaDB: import chromadb
-        - LangChain: from langchain.memory import ConversationSummaryBufferMemory
+        - LangChain: # from langchain_community.memory import ConversationSummaryBufferMemory  # Not available in current LangChain version
         """
         print("[ChatbotService] 초기화 중... ")
         
-        # 여기에 초기화 코드 작성
-        self.config = {}
-        self.client = None
-        self.collection = None
+        # 1. Config 로드
+        self.config = ConfigLoader.load_config()
+        
+        # 2. OpenAI Client 초기화
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key:
+            self.client = OpenAI(api_key=api_key)
+        else:
+            self.client = None
+            print("[WARNING] OPENAI_API_KEY 미설정: LLM 호출을 비활성화합니다.")
+        
+        # 3. RAG 서비스 초기화
+        self.rag_service = RAGService(self.client)
+        
+        # 4. LangChain Memory 초기화 (API 키가 있을 때만)
         self.memory = None
+        if api_key:
+            try:
+                llm = LangChainOpenAI(openai_api_key=api_key, temperature=0.7)
+                self.memory = ConversationSummaryBufferMemory(
+                    llm=llm,
+                    max_token_limit=1000,
+                    return_messages=True
+                )
+            except Exception as e:
+                print(f"[WARNING] 메모리 초기화 실패: {e}")
+        
+        # 5. 감정 분석 서비스 초기화
+        self.emotion_analyzer = EmotionAnalyzer()
+        self.report_generator = ReportGenerator()
         
         print("[ChatbotService] 초기화 완료")
-    
-    
-    def _load_config(self):
-        """
-        설정 파일 로드
-        
-        TODO: config/chatbot_config.json 읽어서 반환
-        
-        반환값 예시:
-        {
-            "name": "김서강",
-            "character": {...},
-            "system_prompt": {...}
-        }
-        """
-        pass
-    
-    
-    def _init_chromadb(self):
-        """
-        ChromaDB 초기화 및 컬렉션 반환
-        
-        TODO: 
-        1. PersistentClient 생성
-        2. 컬렉션 가져오기 (이름: "rag_collection")
-        3. 컬렉션 반환
-        
-        힌트:
-        - import chromadb
-        - db_path = BASE_DIR / "static/data/chatbot/chardb_embedding"
-        - client = chromadb.PersistentClient(path=str(db_path))
-        - collection = client.get_collection(name="rag_collection")
-        """
-        pass
-    
-    
-    def _create_embedding(self, text: str) -> list:
-        """
-        텍스트를 임베딩 벡터로 변환
-        
-        Args:
-            text (str): 임베딩할 텍스트
-        
-        Returns:
-            list: 3072차원 벡터 (text-embedding-3-large 모델)
-        
-        TODO:
-        1. OpenAI API 호출
-        2. embeddings.create() 사용
-        3. 벡터 반환
-        
-        힌트:
-        - response = self.client.embeddings.create(
-        -     input=[text],
-        -     model="text-embedding-3-large"
-        - )
-        - return response.data[0].embedding
-        """
-        pass
-    
-    
-    def _search_similar(self, query: str, threshold: float = 0.45, top_k: int = 5):
-        """
-        RAG 검색: 유사한 문서 찾기 (핵심 메서드!)
-        
-        Args:
-            query (str): 검색 질의
-            threshold (float): 유사도 임계값 (0.3-0.5 권장)
-            top_k (int): 검색할 문서 개수
-        
-        Returns:
-            tuple: (document, similarity, metadata) 또는 (None, None, None)
-        
-        TODO: RAG 검색 알고리즘 구현
-        
-        1. 쿼리 임베딩 생성
-           query_embedding = self._create_embedding(query)
-        
-        2. ChromaDB 검색
-           results = self.collection.query(
-               query_embeddings=[query_embedding],
-               n_results=top_k,
-               include=["documents", "distances", "metadatas"]
-           )
-        
-        3. 유사도 계산 및 필터링
-           for doc, dist, meta in zip(...):
-               similarity = 1 / (1 + dist)  ← 유사도 공식!
-               if similarity >= threshold:
-                   ...
-        
-        4. 가장 유사한 문서 반환
-           return (best_document, best_similarity, metadata)
-        
-        
-        💡 핵심 개념:
-        
-        - Distance vs Similarity
-          · ChromaDB는 "거리(distance)"를 반환 (작을수록 유사)
-          · 우리는 "유사도(similarity)"로 변환 (클수록 유사)
-          · 변환 공식: similarity = 1 / (1 + distance)
-        
-        - Threshold
-          · 0.3: 매우 느슨한 매칭 (관련성 낮아도 OK)
-          · 0.45: 적당한 매칭 (추천!)
-          · 0.7: 매우 엄격한 매칭 (정확한 답만)
-        
-        - Top K
-          · 5-10개 정도 검색
-          · 그 중 threshold 넘는 것만 사용
-        
-        
-        🐛 디버깅 팁:
-        - print()로 검색 결과 확인
-        - 유사도 값 확인 (너무 낮으면 threshold 조정)
-        - 검색된 문서 내용 확인
-        """
-        pass
     
     
     def _build_prompt(self, user_message: str, context: str = None, username: str = "사용자"):
@@ -309,7 +225,42 @@ class ChatbotService:
         사용자: 학식 추천해줘
         ```
         """
-        pass
+        # 시스템 프롬프트 구성
+        system_prompt = self.config.get('system_prompt', {})
+        base_prompt = system_prompt.get('base', '당신은 환승연애팀 막내 PD가 된 친구입니다.')
+        rules = system_prompt.get('rules', [])
+        
+        # 기본 프롬프트 구성
+        prompt_parts = [base_prompt]
+        
+        # 규칙 추가
+        if rules:
+            prompt_parts.append("\n".join([f"- {rule}" for rule in rules]))
+        
+        # RAG 컨텍스트 추가
+        if context:
+            prompt_parts.append(f"\n[참고 정보]\n{context}")
+        
+        # 대화 기록 추가 (선택)
+        if self.memory:
+            try:
+                memory_vars = self.memory.load_memory_variables({})
+                if memory_vars and 'history' in memory_vars:
+                    prompt_parts.append(f"\n[대화 기록]\n{memory_vars['history']}")
+            except Exception as e:
+                print(f"[WARNING] 메모리 로드 실패: {e}")
+        
+        # 대화 지침 추가
+        prompt_parts.append("\n대화 지침:")
+        prompt_parts.append("- 친구처럼 편하게 반말로 대화해")
+        prompt_parts.append("- 너무 상세하게 계속 물어보지 말고, 적당한 타이밍에 다른 주제로 넘어가")
+        prompt_parts.append("- 연애 이야기를 자연스럽게 이끌어내되, 무리하게 끌어내지 마")
+        prompt_parts.append("- 이모티콘은 최소한으로 사용해")
+        
+        # 사용자 메시지 추가
+        prompt_parts.append(f"\n{username}: {user_message}")
+        
+        return "\n".join(prompt_parts)
     
     
     def generate_response(self, user_message: str, username: str = "사용자") -> dict:
@@ -438,8 +389,82 @@ class ChatbotService:
         # 위의 단계를 참고하여 자유롭게 설계하세요
         
         try:
-            # 구현 시작
-            pass
+            print(f"\n{'='*50}")
+            print(f"[USER] {username}: {user_message}")
+            
+            # [1단계] 초기 메시지 처리
+            if user_message.strip().lower() == "init":
+                bot_name = self.config.get('name', '환승연애 PD 친구')
+                return {
+                    'reply': f"야, {username}! 나 이번에 환승연애 팀 막내 PD 됐잖아. 근데 지금 새 프로그램 기획 중인데, 솔직히 사람들 연애 얘기 좀 모으고 있어. 너 전 연애 얘기 좀 해줄 수 있어?",
+                    'image': None
+                }
+            
+            # [2단계] RAG 검색 수행
+            context, similarity, metadata = self.rag_service.search_similar(
+                query=user_message,
+                threshold=0.45,
+                top_k=5
+            )
+            
+            has_context = (context is not None)
+            print(f"[RAG] Context found: {has_context}")
+            if has_context:
+                print(f"[RAG] Similarity: {similarity:.4f}")
+                print(f"[RAG] Context: {context[:100]}...")
+            
+            # [3단계] 연애 감정 분석 수행
+            analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
+            print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
+            
+            # [4단계] 프롬프트 구성
+            prompt = self._build_prompt(
+                user_message=user_message,
+                context=context,
+                username=username
+            )
+            
+            # [5단계] LLM API 호출
+            if self.client:
+                print(f"[LLM] Calling API...")
+                response = self.client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "당신은 환승연애팀 막내 PD가 된 친구입니다. 사용자와 반말로 자연스럽게 대화하며, 연애 이야기를 듣고 미련도를 분석해주는 역할을 합니다. 친구처럼 편하게 대화하고, 이모티콘은 최소한으로 사용하세요. 너무 상세하게 계속 물어보지 말고, 적당한 타이밍에 다른 주제로 넘어가거나 분석 결과를 제시하세요. 자연스러운 대화 흐름을 유지하세요."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                reply = response.choices[0].message.content
+            else:
+                # LLM 비활성화 시 기본 응답
+                reply = "AI 연애 분석 에이전트 데모 모드야. 환경변수 설정 후 더 정교한 분석이 가능해! 먼저 어떤 이야기부터 시작할까?"
+            
+            # [6단계] 감정 리포트 생성 (특정 조건에서)
+            if any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"]):
+                if analysis_results['total'] > 0:  # 분석 결과가 있을 때만
+                    report = self.report_generator.generate_emotion_report(analysis_results, username)
+                    reply += f"\n\n{report}"
+            
+            # [7단계] 메모리 저장
+            if self.memory:
+                try:
+                    self.memory.save_context(
+                        {"input": user_message},
+                        {"output": reply}
+                    )
+                except Exception as e:
+                    print(f"[WARNING] 메모리 저장 실패: {e}")
+            
+            print(f"[BOT] {reply[:100]}...")
+            print(f"{'='*50}\n")
+            
+            # [8단계] 응답 반환
+            return {
+                'reply': reply,
+                'image': None
+            }
             
         except Exception as e:
             print(f"[ERROR] 응답 생성 실패: {e}")
