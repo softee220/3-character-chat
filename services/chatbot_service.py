@@ -84,6 +84,27 @@ class ChatbotService:
         self.state_turns = 0  # 현재 상태에서 진행된 턴 수 (Fail-Safe)
         self.dialogue_states_flow = ['RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_UNRESOLVED', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
         
+        # 7. Flow Control 파라미터 로드 (config에서)
+        flow_control = self.config.get('flow_control', {})
+        turn_thresholds = flow_control.get('turn_thresholds', {})
+        emotion_thresholds = flow_control.get('emotion_thresholds', {})
+        
+        # 턴 수 임계값
+        self.early_exit_turn_count = turn_thresholds.get('early_exit_turn_count', 5)
+        self.max_total_turns = turn_thresholds.get('max_total_turns', 10)
+        self.max_state_turns = turn_thresholds.get('max_state_turns', 5)
+        
+        # 감정 임계값
+        self.low_regret_threshold = emotion_thresholds.get('low_regret_threshold', 25.0)
+        self.high_attachment_threshold = emotion_thresholds.get('high_attachment_threshold', 70.0)
+        self.high_regret_threshold = emotion_thresholds.get('high_regret_threshold', 70.0)
+        self.high_unresolved_threshold = emotion_thresholds.get('high_unresolved_threshold', 70.0)
+        self.high_comparison_threshold = emotion_thresholds.get('high_comparison_threshold', 70.0)
+        self.high_avoidance_threshold = emotion_thresholds.get('high_avoidance_threshold', 70.0)
+        
+        # 중단 요청 임계값
+        self.stop_request_threshold = flow_control.get('stop_request_threshold', 2)
+        
         print("[ChatbotService] 초기화 완료")
     
     
@@ -162,8 +183,8 @@ class ChatbotService:
             # [조기 종료 2: 중단 요청 처리] - turn_count 증가 전에 처리
             if '그만할래' in user_message or '그만 말하고 싶어' in user_message:
                 self.stop_request_count += 1
-                if self.stop_request_count >= 2:
-                    print("[FLOW_CONTROL] 2회차 중단 요청. 강제 보고서 전환.")
+                if self.stop_request_count >= self.stop_request_threshold:
+                    print(f"[FLOW_CONTROL] {self.stop_request_threshold}회차 중단 요청. 강제 보고서 전환.")
                     self.dialogue_state = 'TRANSITION_FORCED_REPORT'
                     # 강제 종료 프롬프트는 bridge_prompt_addition으로 처리
             
@@ -191,9 +212,9 @@ class ChatbotService:
             analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
             print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
             
-            # [조기 전환 1: 미련도 25% 미만]
-            if analysis_results['total'] < 25.0 and self.turn_count >= 3:
-                print("[FLOW_CONTROL] 완전 정리 단계로 추론. 인터뷰 조기 종료 및 보고서 전환 유도.")
+            # [조기 전환 1: 미련도 임계값 미만]
+            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count:
+                print(f"[FLOW_CONTROL] 완전 정리 단계로 추론 (미련도 < {self.low_regret_threshold}%, 턴 수 >= {self.early_exit_turn_count}). 인터뷰 조기 종료 및 보고서 전환 유도.")
                 self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                 # 프롬프트는 bridge_prompt_addition으로 처리
             
@@ -202,35 +223,35 @@ class ChatbotService:
             # [상태 강제 전환 (오류 해결)] - 유연한 전환 로직 전에 실행
             current_state = self.dialogue_state
             
-            # 강제 전환 로직: 각 상태에서 3턴 이상 진행 시 다음 상태로 전환 (INITIAL_SETUP 상태가 아닐 때만 실행)
+            # 강제 전환 로직: 각 상태에서 최대 턴 수 초과 시 다음 상태로 전환 (INITIAL_SETUP 상태가 아닐 때만 실행)
             if current_state != 'INITIAL_SETUP':
-                if current_state == 'RECALL_ATTACHMENT' and self.state_turns > 3:
-                    print("[FLOW_CONTROL] RECALL_ATTACHMENT 상태 턴 수 초과(>3). 강제 전환.")
+                if current_state == 'RECALL_ATTACHMENT' and self.state_turns > self.max_state_turns:
+                    print(f"[FLOW_CONTROL] RECALL_ATTACHMENT 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
                     self.dialogue_state = 'RECALL_REGRET'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                elif current_state == 'RECALL_REGRET' and self.state_turns > 3:
-                    print("[FLOW_CONTROL] RECALL_REGRET 상태 턴 수 초과(>3). 강제 전환.")
+                elif current_state == 'RECALL_REGRET' and self.state_turns > self.max_state_turns:
+                    print(f"[FLOW_CONTROL] RECALL_REGRET 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
                     self.dialogue_state = 'RECALL_UNRESOLVED'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게. 이 단계에선 헤어진 이유에 대한 질문이 무조건 들어가야 해."
-                elif current_state == 'RECALL_UNRESOLVED' and self.state_turns > 3:
-                    print("[FLOW_CONTROL] RECALL_UNRESOLVED 상태 턴 수 초과(>3). 강제 전환.")
+                elif current_state == 'RECALL_UNRESOLVED' and self.state_turns > self.max_state_turns:
+                    print(f"[FLOW_CONTROL] RECALL_UNRESOLVED 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
                     self.dialogue_state = 'RECALL_COMPARISON'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                elif current_state == 'RECALL_COMPARISON' and self.state_turns > 3:
-                    print("[FLOW_CONTROL] RECALL_COMPARISON 상태 턴 수 초과(>3). 강제 전환.")
+                elif current_state == 'RECALL_COMPARISON' and self.state_turns > self.max_state_turns:
+                    print(f"[FLOW_CONTROL] RECALL_COMPARISON 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
                     self.dialogue_state = 'RECALL_AVOIDANCE'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
-                elif current_state == 'RECALL_AVOIDANCE' and self.state_turns > 3:
-                    print("[FLOW_CONTROL] RECALL_AVOIDANCE 상태 턴 수 초과(>3). 강제 전환.")
+                elif current_state == 'RECALL_AVOIDANCE' and self.state_turns > self.max_state_turns:
+                    print(f"[FLOW_CONTROL] RECALL_AVOIDANCE 상태 턴 수 초과(>{self.max_state_turns}). 강제 전환.")
                     self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
             
-            # 중단 요청 처리 (2회차)
-            if self.stop_request_count >= 2 and self.dialogue_state == 'TRANSITION_FORCED_REPORT':
+            # 중단 요청 처리
+            if self.stop_request_count >= self.stop_request_threshold and self.dialogue_state == 'TRANSITION_FORCED_REPORT':
                 bridge_prompt_addition = "\n[강제 종료 템플릿]: 아쉽다... 난 너랑 더 얘기하고 싶었는데... 그래도 지금까지 답해줘서 고마워! 우리 팀 데모 AI한테 살짝 너의 얘기 돌려봤는데... 같은 친근한 톤으로 강제 종료 후 리포트로 전환하는 자연스러운 메시지를 생성하세요."
             
             # 조기 전환 1 처리
-            if analysis_results['total'] < 25.0 and self.turn_count >= 3 and self.dialogue_state == 'TRANSITION_NATURAL_REPORT':
+            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state == 'TRANSITION_NATURAL_REPORT':
                 if not bridge_prompt_addition:  # 이미 bridge_prompt_addition이 설정되지 않은 경우에만
                     bridge_prompt_addition = "\n[조기 종료 템플릿]: 와, 너 완전히 정리했네! 그럼 여기서 인터뷰 마무리하고 AI 분석 리포트 바로 볼래? 같은 자연스러운 메시지를 생성하여 리포트 단계로 전환하세요."
             
@@ -256,33 +277,33 @@ class ChatbotService:
             # [3-2단계] 유연한 상태 전환 로직 (Task 2) - 강제 전환 로직 이후에 실행
             # INITIAL_SETUP 상태가 아닐 때만 실행
             if current_state != 'INITIAL_SETUP':
-                # 조건부 로직 1: RECALL_ATTACHMENT → RECALL_REGRET (기준 attachment > 70.0)
-                if current_state == 'RECALL_ATTACHMENT' and analysis_results['attachment'] > 70.0:
-                    print("[FLOW_CONTROL] 애착도 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                # 조건부 로직 1: RECALL_ATTACHMENT → RECALL_REGRET (기준 attachment > threshold)
+                if current_state == 'RECALL_ATTACHMENT' and analysis_results['attachment'] > self.high_attachment_threshold:
+                    print(f"[FLOW_CONTROL] 애착도 데이터 충분(>{self.high_attachment_threshold}%). 다음 상태로 자연스럽게 전환.")
                     self.dialogue_state = 'RECALL_REGRET'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 네 얘기에서 X에 대한 그리움이 확 느껴지네. 그럼 그때 네가 아쉬웠던 점은 없어? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
                 
-                # 조건부 로직 2: RECALL_REGRET → RECALL_UNRESOLVED (기준 regret > 70.0)
-                elif current_state == 'RECALL_REGRET' and analysis_results['regret'] > 70.0:
-                    print("[FLOW_CONTROL] 후회도 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                # 조건부 로직 2: RECALL_REGRET → RECALL_UNRESOLVED (기준 regret > threshold)
+                elif current_state == 'RECALL_REGRET' and analysis_results['regret'] > self.high_regret_threshold:
+                    print(f"[FLOW_CONTROL] 후회도 데이터 충분(>{self.high_regret_threshold}%). 다음 상태로 자연스럽게 전환.")
                     self.dialogue_state = 'RECALL_UNRESOLVED'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게. 이 단계에선 헤어진 이유에 대한 질문이 무조건 들어가야 해."
                 
-                # 조건부 로직 3: RECALL_UNRESOLVED → RECALL_COMPARISON (기준 unresolved > 70.0)
-                elif current_state == 'RECALL_UNRESOLVED' and analysis_results['unresolved'] > 70.0:
-                    print("[FLOW_CONTROL] 미해결감 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                # 조건부 로직 3: RECALL_UNRESOLVED → RECALL_COMPARISON (기준 unresolved > threshold)
+                elif current_state == 'RECALL_UNRESOLVED' and analysis_results['unresolved'] > self.high_unresolved_threshold:
+                    print(f"[FLOW_CONTROL] 미해결감 데이터 충분(>{self.high_unresolved_threshold}%). 다음 상태로 자연스럽게 전환.")
                     self.dialogue_state = 'RECALL_COMPARISON'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 솔직히 말해봐, 지금 만나는 사람이나 다른 사람이 X랑 비교가 돼? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
                 
-                # 조건부 로직 4: RECALL_COMPARISON → RECALL_AVOIDANCE (기준 comparison > 70.0)
-                elif current_state == 'RECALL_COMPARISON' and analysis_results['comparison'] > 70.0:
-                    print("[FLOW_CONTROL] 비교 기준 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                # 조건부 로직 4: RECALL_COMPARISON → RECALL_AVOIDANCE (기준 comparison > threshold)
+                elif current_state == 'RECALL_COMPARISON' and analysis_results['comparison'] > self.high_comparison_threshold:
+                    print(f"[FLOW_CONTROL] 비교 기준 데이터 충분(>{self.high_comparison_threshold}%). 다음 상태로 자연스럽게 전환.")
                     self.dialogue_state = 'RECALL_AVOIDANCE'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 그 사람 얘기만 나오면 네가 좀 피하는 것 같아. 혹시 아직도 X가 연락 오면 피할 것 같아? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
                 
-                # 조건부 로직 5: RECALL_AVOIDANCE → TRANSITION_NATURAL_REPORT (기준 avoidance > 70.0)
-                elif current_state == 'RECALL_AVOIDANCE' and analysis_results['avoidance'] > 70.0:
-                    print("[FLOW_CONTROL] 회피/접근 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                # 조건부 로직 5: RECALL_AVOIDANCE → TRANSITION_NATURAL_REPORT (기준 avoidance > threshold)
+                elif current_state == 'RECALL_AVOIDANCE' and analysis_results['avoidance'] > self.high_avoidance_threshold:
+                    print(f"[FLOW_CONTROL] 회피/접근 데이터 충분(>{self.high_avoidance_threshold}%). 다음 상태로 자연스럽게 전환.")
                     self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                     bridge_prompt_addition = "\n[상태 전환 브릿지]: 와, 이제 진짜 네 감정 다 파악한 것 같아! 우리 중간 보고서 바로 볼래? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
             
@@ -298,8 +319,8 @@ class ChatbotService:
             
             # [전환부: 총 턴 수 임계값 (Task 4)] - 프롬프트 구성 전에 실행
             current_state = self.dialogue_state
-            if self.turn_count >= 10 and current_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING']:
-                print("[FLOW_CONTROL] 총 턴 수 임계값 도달(>=10). 강제 리포트 전환.")
+            if self.turn_count >= self.max_total_turns and current_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING']:
+                print(f"[FLOW_CONTROL] 총 턴 수 임계값 도달(>={self.max_total_turns}). 강제 리포트 전환.")
                 self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                 bridge_prompt_addition = "\n[대화 축약 및 전환]: PD로서 대화 흐름을 끊고, 지금까지의 대화 내용을 1-2문장으로 핵심 요약 및 공감 후, AI 분석 결과를 지금 바로 '분석'해 볼지 친근하게 제안하는 자연스러운 메시지를 생성하세요."
             

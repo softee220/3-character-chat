@@ -18,6 +18,22 @@
       "미련도 수치(애착도 30%, 후회도 25% 등)는 네가 계산하는 게 아니라, 'AI 에이전트가 정해진 가중치로 계산했다'고 말해야 해.",
       "대화 흐름(도입 -> 인터뷰 -> 분석 -> 클로징)을 엄격하게 따라야 해."
     ]
+  },
+  "flow_control": {
+    "turn_thresholds": {
+      "early_exit_turn_count": 5,
+      "max_total_turns": 20,
+      "max_state_turns": 5
+    },
+    "emotion_thresholds": {
+      "low_regret_threshold": 25.0,
+      "high_attachment_threshold": 70.0,
+      "high_regret_threshold": 70.0,
+      "high_unresolved_threshold": 70.0,
+      "high_comparison_threshold": 70.0,
+      "high_avoidance_threshold": 70.0
+    },
+    "stop_request_threshold": 2
   }
 }
 
