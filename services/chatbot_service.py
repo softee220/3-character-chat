@@ -1,93 +1,3 @@
-"""
-🎯 챗봇 서비스 - 구현 파일
-
-이 파일은 챗봇의 핵심 AI 로직을 담당합니다.
-아래 아키텍처를 참고하여 직접 설계하고 구현하세요.
-
-📐 시스템 아키텍처:
-
-┌─────────────────────────────────────────────────────────┐
-│ 1. 초기화 단계 (ChatbotService.__init__)                  │
-├─────────────────────────────────────────────────────────┤
-│  - OpenAI Client 생성                                    │
-│  - ChromaDB 연결 (벡터 데이터베이스)                       │
-│  - LangChain Memory 초기화 (대화 기록 관리)               │
-│  - Config 파일 로드                                       │
-└─────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────┐
-│ 2. RAG 파이프라인 (generate_response 내부)               │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  사용자 질문 "학식 추천해줘"                              │
-│       ↓                                                  │
-│  [_create_embedding()]                                   │
-│       ↓                                                  │
-│  질문 벡터: [0.12, -0.34, ..., 0.78]  (3072차원)        │
-│       ↓                                                  │
-│  [_search_similar()]  ← ChromaDB 검색                    │
-│       ↓                                                  │
-│  검색 결과: "학식은 곤자가가 맛있어" (유사도: 0.87)        │
-│       ↓                                                  │
-│  [_build_prompt()]                                       │
-│       ↓                                                  │
-│  최종 프롬프트 = 시스템 설정 + RAG 컨텍스트 + 질문        │
-└─────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────┐
-│ 3. LLM 응답 생성                                         │
-├─────────────────────────────────────────────────────────┤
-│  OpenAI GPT-4 API 호출                                   │
-│       ↓                                                  │
-│  "학식은 곤자가에서 먹는 게 제일 좋아! 돈까스가 인기야"    │
-│       ↓                                                  │
-│  [선택: 이미지 검색]                                      │
-│       ↓                                                  │
-│  응답 반환: {reply: "...", image: "..."}                 │
-└─────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────┐
-│ 4. 메모리 저장 (LangChain Memory)                        │
-├─────────────────────────────────────────────────────────┤
-│  대화 기록에 질문-응답 저장                               │
-│  다음 대화에서 컨텍스트로 활용                            │
-└─────────────────────────────────────────────────────────┘
-
-
-💡 핵심 구현 과제:
-
-1. **Embedding 생성**
-   - OpenAI API를 사용하여 텍스트를 벡터로 변환
-   - 모델: text-embedding-3-large (3072차원)
-
-2. **RAG 검색 알고리즘** ⭐ 가장 중요!
-   - ChromaDB에서 유사 벡터 검색
-   - 유사도 계산: similarity = 1 / (1 + distance)
-   - threshold 이상인 문서만 선택
-
-3. **LLM 프롬프트 설계**
-   - 시스템 프롬프트 (캐릭터 설정)
-   - RAG 컨텍스트 통합
-   - 대화 기록 포함
-
-4. **대화 메모리 관리**
-   - LangChain의 ConversationSummaryBufferMemory 사용
-   - 대화가 길어지면 자동으로 요약
-
-
-📚 참고 문서:
-- ARCHITECTURE.md: 시스템 아키텍처 상세 설명
-- IMPLEMENTATION_GUIDE.md: 단계별 구현 가이드
-- README.md: 프로젝트 개요
-
-
-⚠️ 주의사항:
-- 이 파일의 구조는 가이드일 뿐입니다
-- 자유롭게 재설계하고 확장할 수 있습니다
-- 단, generate_response() 함수 시그니처는 유지해야 합니다
-  (app.py에서 호출하기 때문)
-"""
-
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -99,8 +9,18 @@ from openai import OpenAI
 from .emotion_analyzer import EmotionAnalyzer, ReportGenerator
 from .rag_service import RAGService
 from .config_loader import ConfigLoader
-# from langchain_community.memory import ConversationSummaryBufferMemory  # Not available in current LangChain version
-# from langchain.llms import OpenAI as LangChainOpenAI  # Not available in current LangChain version
+import traceback
+
+# LangChain import (안전한 방식)
+try:
+    from langchain_community.memory import ConversationSummaryBufferMemory
+    from langchain_openai import ChatOpenAI
+    LANGCHAIN_AVAILABLE = True
+except ImportError as e:
+    print(f"[WARNING] LangChain import 실패: {e}")
+    LANGCHAIN_AVAILABLE = False
+    ConversationSummaryBufferMemory = None
+    ChatOpenAI = None
 
 # 환경변수 로드
 load_dotenv()
@@ -132,30 +52,42 @@ class ChatbotService:
         
         # 4. LangChain Memory 초기화 (API 키가 있을 때만)
         self.memory = None
-        if api_key:
+        if api_key and LANGCHAIN_AVAILABLE:
             try:
-                llm = LangChainOpenAI(openai_api_key=api_key, temperature=0.7)
+                # 최신 langchain-openai에서는 openai_api_key 또는 환경변수 사용
+                llm = ChatOpenAI(
+                    openai_api_key=api_key,  # api_key → openai_api_key로 변경
+                    temperature=0.7, 
+                    model="gpt-4o-mini"
+                )
                 self.memory = ConversationSummaryBufferMemory(
                     llm=llm,
                     max_token_limit=1000,
                     return_messages=True
                 )
+                print("[ChatbotService] LangChain 메모리 초기화 성공")
             except Exception as e:
                 print(f"[WARNING] 메모리 초기화 실패: {e}")
+                traceback.print_exc()
+                self.memory = None  # 실패해도 계속 진행
+        elif not LANGCHAIN_AVAILABLE:
+            print("[WARNING] LangChain 라이브러리가 설치되지 않아 메모리 기능을 비활성화합니다.")
         
         # 5. 감정 분석 서비스 초기화
         self.emotion_analyzer = EmotionAnalyzer()
         self.report_generator = ReportGenerator()
         
         # 6. DSM 상태 관리 변수 초기화
-        self.dialogue_state = 'INTRO'  # 대화 상태 (INTRO, RECALL_ATTACHMENT, RECALL_REGRET, etc.)
+        self.dialogue_state = 'INITIAL_SETUP'  # 대화 상태 (INITIAL_SETUP, RECALL_ATTACHMENT, RECALL_REGRET, etc.)
         self.turn_count = 0  # 대화 턴 수 추적
         self.stop_request_count = 0  # 사용자 대화 중단 요청 횟수
+        self.state_turns = 0  # 현재 상태에서 진행된 턴 수 (Fail-Safe)
+        self.dialogue_states_flow = ['RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_UNRESOLVED', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
         
         print("[ChatbotService] 초기화 완료")
     
     
-    def _build_prompt(self, user_message: str, context: str = None, username: str = "사용자"):
+    def _build_prompt(self, user_message: str, context: str = None, username: str = "사용자", bridge_prompt_addition: str = None):
  
         # 시스템 프롬프트 구성
         system_prompt = self.config.get('system_prompt', {})
@@ -182,18 +114,20 @@ class ChatbotService:
             except Exception as e:
                 print(f"[WARNING] 메모리 로드 실패: {e}")
         
-        # 대화 지침 추가
-        prompt_parts.append("\n대화 지침:")
-        prompt_parts.append("- 친구처럼 편하게 반말로 대화해")
-        prompt_parts.append("- 너무 상세하게 계속 물어보지 말고, 적당한 타이밍에 다른 주제로 넘어가")
-        prompt_parts.append("- 연애 이야기를 자연스럽게 이끌어내되, 무리하게 끌어내지 마")
-        prompt_parts.append("- 이모티콘은 최소한으로 사용해")
+        # 지능적 꼬리 질문 지시문 (상태별로 동적 추가)
+        if self.dialogue_state == 'RECALL_ATTACHMENT':
+            prompt_parts.append("\n[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자가 언급한 감정적 단어를 추출하고, 그 단어에 반대되는 감정을 묻는 질문을 생성하여 애착도 점수를 미세 조정하세요. (예: '그리워' → '근데 후회되는 일은 없어?').")
+        elif self.dialogue_state == 'RECALL_REGRET': # 후회에 맞는 프롬포트인가??
+            prompt_parts.append("\n[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자의 답변에서 가장 모호하거나 논리적 비약이 있는 부분을 1개 선정하여, 그것의 근본적인 원인을 파고드는 질문(예: '왜' 또는 '만약'을 사용하는)을 생성하세요. 감정의 일관성을 검증해야 합니다.")
+        elif self.dialogue_state == 'RECALL_UNRESOLVED':
+            prompt_parts.append("\n[지능적 꼬리 질문 지시]:")
+            prompt_parts.append("- 사용자 답변에서 모호한 상황을 추출하고, 그 모호함을 해소하기 위해 '결정적 순간'을 묻는 질문을 생성하여 미해결감을 측정하세요.")
         
-        # Redirection Rule 및 주제 이탈 방지 지침 추가
-        prompt_parts.append("\n[PD 친구 규칙 강화]:")
-        prompt_parts.append("- 너는 환승연애 PD 친구로서, 오직 전애인(X)과의 연애 이야기에만 집중해야 해.")
-        prompt_parts.append("\n[주제 복귀 규칙]:")
-        prompt_parts.append("- 사용자가 현애인 또는 전애인과 무관한 주제(일반 일상, 미래 계획 등)로 대화가 이탈하면, 'AI 분석 범위 밖' 또는 '기획안 데이터'를 핑계로 친근하게 대화를 전애인 이야기로 복귀시켜야 해. 절대로 딱딱하게 끊거나 강압적으로 들리면 안 돼.")
+        # 상태 전환 브릿지 질문 지시 추가 (유연한 전환 시)
+        if bridge_prompt_addition:
+            prompt_parts.append(bridge_prompt_addition)
         
         # 사용자 메시지 추가
         prompt_parts.append(f"\n{username}: {user_message}")
@@ -214,18 +148,30 @@ class ChatbotService:
             # [1단계] 초기 메시지 처리
             if user_message.strip().lower() == "init":
                 bot_name = self.config.get('name', '환승연애 PD 친구')
-                # 도입부: INTRO 상태로 시작
-                self.dialogue_state = 'INTRO'
+                # 도입부: INITIAL_SETUP 상태로 시작
+                self.dialogue_state = 'INITIAL_SETUP'
                 self.turn_count = 0
                 self.stop_request_count = 0
+                self.state_turns = 0
                 return {
-                    'reply': f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 ‘X와의 미련도 측정 AI’ 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지마마 그냥 친구한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?",
+                    'reply': f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지마마 그냥 친구한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?",
 
                     'image': None
                 }
             
+            # [조기 종료 2: 중단 요청 처리] - turn_count 증가 전에 처리
+            if '그만할래' in user_message or '그만 말하고 싶어' in user_message:
+                self.stop_request_count += 1
+                if self.stop_request_count >= 2:
+                    print("[FLOW_CONTROL] 2회차 중단 요청. 강제 보고서 전환.")
+                    self.dialogue_state = 'TRANSITION_FORCED_REPORT'
+                    # 강제 종료 프롬프트는 bridge_prompt_addition으로 처리
+            
             # 일반 메시지의 경우 turn_count 증가
             self.turn_count += 1
+            
+            # [턴 트래킹 로직] - 상태 전환 감지 및 state_turns 관리
+            previous_state = self.dialogue_state  # 상태 전환 로직 실행 전 상태 저장
             
             # [2단계] RAG 검색 수행
             #우리는 RAG 검색 매 질문마다 사용 하지 않음 불필요 
@@ -245,11 +191,124 @@ class ChatbotService:
             analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
             print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
             
+            # [조기 전환 1: 미련도 25% 미만]
+            if analysis_results['total'] < 25.0 and self.turn_count >= 3:
+                print("[FLOW_CONTROL] 완전 정리 단계로 추론. 인터뷰 조기 종료 및 보고서 전환 유도.")
+                self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
+                # 프롬프트는 bridge_prompt_addition으로 처리
+            
+            bridge_prompt_addition = None  # 브릿지 질문 프롬프트 추가용
+            
+            # [상태 강제 전환 (오류 해결)] - 유연한 전환 로직 전에 실행
+            current_state = self.dialogue_state
+            
+            # 강제 전환 로직: 각 상태에서 3턴 이상 진행 시 다음 상태로 전환 (INITIAL_SETUP 상태가 아닐 때만 실행)
+            if current_state != 'INITIAL_SETUP':
+                if current_state == 'RECALL_ATTACHMENT' and self.state_turns > 3:
+                    print("[FLOW_CONTROL] RECALL_ATTACHMENT 상태 턴 수 초과(>3). 강제 전환.")
+                    self.dialogue_state = 'RECALL_REGRET'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+                elif current_state == 'RECALL_REGRET' and self.state_turns > 3:
+                    print("[FLOW_CONTROL] RECALL_REGRET 상태 턴 수 초과(>3). 강제 전환.")
+                    self.dialogue_state = 'RECALL_UNRESOLVED'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게. 이 단계에선 헤어진 이유에 대한 질문이 무조건 들어가야 해."
+                elif current_state == 'RECALL_UNRESOLVED' and self.state_turns > 3:
+                    print("[FLOW_CONTROL] RECALL_UNRESOLVED 상태 턴 수 초과(>3). 강제 전환.")
+                    self.dialogue_state = 'RECALL_COMPARISON'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+                elif current_state == 'RECALL_COMPARISON' and self.state_turns > 3:
+                    print("[FLOW_CONTROL] RECALL_COMPARISON 상태 턴 수 초과(>3). 강제 전환.")
+                    self.dialogue_state = 'RECALL_AVOIDANCE'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+                elif current_state == 'RECALL_AVOIDANCE' and self.state_turns > 3:
+                    print("[FLOW_CONTROL] RECALL_AVOIDANCE 상태 턴 수 초과(>3). 강제 전환.")
+                    self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+            
+            # 중단 요청 처리 (2회차)
+            if self.stop_request_count >= 2 and self.dialogue_state == 'TRANSITION_FORCED_REPORT':
+                bridge_prompt_addition = "\n[강제 종료 템플릿]: 아쉽다... 난 너랑 더 얘기하고 싶었는데... 그래도 지금까지 답해줘서 고마워! 우리 팀 데모 AI한테 살짝 너의 얘기 돌려봤는데... 같은 친근한 톤으로 강제 종료 후 리포트로 전환하는 자연스러운 메시지를 생성하세요."
+            
+            # 조기 전환 1 처리
+            if analysis_results['total'] < 25.0 and self.turn_count >= 3 and self.dialogue_state == 'TRANSITION_NATURAL_REPORT':
+                if not bridge_prompt_addition:  # 이미 bridge_prompt_addition이 설정되지 않은 경우에만
+                    bridge_prompt_addition = "\n[조기 종료 템플릿]: 와, 너 완전히 정리했네! 그럼 여기서 인터뷰 마무리하고 AI 분석 리포트 바로 볼래? 같은 자연스러운 메시지를 생성하여 리포트 단계로 전환하세요."
+            
+            # [3-1단계] INITIAL_SETUP 로직 구현 - 가장 먼저 실행
+            current_state = self.dialogue_state
+            
+            if current_state == 'INITIAL_SETUP':
+                positive_keywords = ['그래', '알았어', '좋아', '응', 'ok', '네']
+                negative_keywords = ['싫어', '안 해', '못 해', '그만', '바빠']
+                
+                # positive_keywords와 같은 문맥의 대답인지 확인
+                if any(keyword in user_message for keyword in positive_keywords):
+                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답 확인. RECALL_ATTACHMENT로 전환.")
+                    self.dialogue_state = 'RECALL_ATTACHMENT'
+                    bridge_prompt_addition = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 첫만남을 묻는 질문을 시작해"
+                    current_state = 'RECALL_ATTACHMENT'  # current_state 업데이트
+                # negative_keywords와 같은 문맥의 대답인지 확인
+                elif any(keyword in user_message for keyword in negative_keywords):
+                    print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답 확인. INITIAL_SETUP 유지 및 설득.")
+                    self.dialogue_state = 'INITIAL_SETUP'
+                    bridge_prompt_addition = "\n[INITIAL_SETUP 설득]: 야! 난 네 친구잖아. PD가 된 친구를 도와준다고 생각해줘. 네 얘기 진짜 도움 될 거 같아. X 얘기 좀 편하게 해줘."
+            
+            # [3-2단계] 유연한 상태 전환 로직 (Task 2) - 강제 전환 로직 이후에 실행
+            # INITIAL_SETUP 상태가 아닐 때만 실행
+            if current_state != 'INITIAL_SETUP':
+                # 조건부 로직 1: RECALL_ATTACHMENT → RECALL_REGRET (기준 attachment > 70.0)
+                if current_state == 'RECALL_ATTACHMENT' and analysis_results['attachment'] > 70.0:
+                    print("[FLOW_CONTROL] 애착도 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                    self.dialogue_state = 'RECALL_REGRET'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 네 얘기에서 X에 대한 그리움이 확 느껴지네. 그럼 그때 네가 아쉬웠던 점은 없어? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+                
+                # 조건부 로직 2: RECALL_REGRET → RECALL_UNRESOLVED (기준 regret > 70.0)
+                elif current_state == 'RECALL_REGRET' and analysis_results['regret'] > 70.0:
+                    print("[FLOW_CONTROL] 후회도 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                    self.dialogue_state = 'RECALL_UNRESOLVED'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 데이터가 충분한 것 같아! 다음 질문으로 넘어갈게. 이 단계에선 헤어진 이유에 대한 질문이 무조건 들어가야 해."
+                
+                # 조건부 로직 3: RECALL_UNRESOLVED → RECALL_COMPARISON (기준 unresolved > 70.0)
+                elif current_state == 'RECALL_UNRESOLVED' and analysis_results['unresolved'] > 70.0:
+                    print("[FLOW_CONTROL] 미해결감 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                    self.dialogue_state = 'RECALL_COMPARISON'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 솔직히 말해봐, 지금 만나는 사람이나 다른 사람이 X랑 비교가 돼? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+                
+                # 조건부 로직 4: RECALL_COMPARISON → RECALL_AVOIDANCE (기준 comparison > 70.0)
+                elif current_state == 'RECALL_COMPARISON' and analysis_results['comparison'] > 70.0:
+                    print("[FLOW_CONTROL] 비교 기준 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                    self.dialogue_state = 'RECALL_AVOIDANCE'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 그 사람 얘기만 나오면 네가 좀 피하는 것 같아. 혹시 아직도 X가 연락 오면 피할 것 같아? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+                
+                # 조건부 로직 5: RECALL_AVOIDANCE → TRANSITION_NATURAL_REPORT (기준 avoidance > 70.0)
+                elif current_state == 'RECALL_AVOIDANCE' and analysis_results['avoidance'] > 70.0:
+                    print("[FLOW_CONTROL] 회피/접근 데이터 충분(>70%). 다음 상태로 자연스럽게 전환.")
+                    self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
+                    bridge_prompt_addition = "\n[상태 전환 브릿지]: 와, 이제 진짜 네 감정 다 파악한 것 같아! 우리 중간 보고서 바로 볼래? 같은 자연스러운 브릿지 질문을 생성하여 다음 단계로 이어가세요."
+            
+            # [턴 트래킹 로직] - 상태 전환 여부 확인 및 state_turns 업데이트
+            if previous_state != self.dialogue_state:
+                # 상태가 전환된 경우
+                self.state_turns = 1
+                print(f"[FLOW_CONTROL] 상태 전환: {previous_state} → {self.dialogue_state}")
+            else:
+                # 상태가 유지된 경우
+                self.state_turns += 1
+                print(f"[FLOW_CONTROL] 상태 유지: {self.dialogue_state} (턴 수: {self.state_turns})")
+            
+            # [전환부: 총 턴 수 임계값 (Task 4)] - 프롬프트 구성 전에 실행
+            current_state = self.dialogue_state
+            if self.turn_count >= 10 and current_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING']:
+                print("[FLOW_CONTROL] 총 턴 수 임계값 도달(>=10). 강제 리포트 전환.")
+                self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
+                bridge_prompt_addition = "\n[대화 축약 및 전환]: PD로서 대화 흐름을 끊고, 지금까지의 대화 내용을 1-2문장으로 핵심 요약 및 공감 후, AI 분석 결과를 지금 바로 '분석'해 볼지 친근하게 제안하는 자연스러운 메시지를 생성하세요."
+            
             # [4단계] 프롬프트 구성
             prompt = self._build_prompt(
                 user_message=user_message,
                 context=context,
-                username=username
+                username=username,
+                bridge_prompt_addition=bridge_prompt_addition
             )
             
             # [5단계] LLM API 호출
@@ -259,7 +318,7 @@ class ChatbotService:
                 response = self.client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "당신은 환승연애팀 막내 PD가 된 친구입니다. 사용자와 반말로 자연스럽게 대화하며, 연애 이야기를 듣고 미련도를 분석해주는 역할을 합니다. 친구처럼 편하게 대화하고, 이모티콘은 최소한으로 사용하세요. 너무 상세하게 계속 물어보지 말고, 적당한 타이밍에 다른 주제로 넘어가거나 분석 결과를 제시하세요. 자연스러운 대화 흐름을 유지하세요."},
+                        {"role": "system", "content": "당신은 환승연애팀 막내 PD가 된 친구입니다. 사용자의 전 연애 이야기를 듣고 미련도를 분석하기 위한 **다음 꼬리 질문을 생성하는 것이 유일한 임무**입니다. 친근함을 유지하되, **대화의 주도권을 가지고 질문을 던지세요.**"},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
@@ -271,10 +330,14 @@ class ChatbotService:
                 reply = "AI 연애 분석 에이전트 데모 모드야. 환경변수 설정 후 더 정교한 분석이 가능해! 먼저 어떤 이야기부터 시작할까?"
             
             # [6단계] 감정 리포트 생성 (특정 조건에서)
-            if any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"]):
+            if any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"]) or \
+               self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT']:
                 if analysis_results['total'] > 0:  # 분석 결과가 있을 때만
                     report = self.report_generator.generate_emotion_report(analysis_results, username)
                     reply += f"\n\n{report}"
+                    # 리포트 생성 후 CLOSING 상태로 전환
+                    self.dialogue_state = 'CLOSING'
+                    print("[FLOW_CONTROL] 리포트 생성 완료. CLOSING 상태로 전환.")
             
             # [7단계] 메모리 저장
             if self.memory:
