@@ -42,9 +42,9 @@ class ChatbotService:
         # 4. 대화 기록 저장소 초기화
         self.dialogue_history: List[Dict[str, str]] = []
         
-        # 5. 감정 분석 서비스 초기화
-        self.emotion_analyzer = EmotionAnalyzer()
-        self.report_generator = ReportGenerator()
+        # 5. 감정 분석 서비스 초기화 (RAG, OpenAI 클라이언트 주입)
+        self.emotion_analyzer = EmotionAnalyzer(rag_service=self.rag_service, openai_client=self.client)
+        self.report_generator = ReportGenerator(rag_service=self.rag_service, openai_client=self.client)
         
         # 5. DSM 상태 관리 변수 초기화
         self.dialogue_state = 'INITIAL_SETUP'  # 대화 상태
@@ -246,6 +246,23 @@ class ChatbotService:
 분석을 원하면 말해줘!
 """
         return closing_prompt
+    
+    def _collect_dialogue_context_for_report(self) -> str:
+        """
+        리포트 생성을 위한 대화 맥락 수집
+        
+        Returns:
+            str: 사용자의 주요 답변들을 묶은 텍스트
+        """
+        user_responses = []
+        for item in self.dialogue_history:
+            # 혜슬(봇)의 메시지가 아닌 것만 수집
+            if item.get('role') != '혜슬':
+                user_responses.append(item.get('content', ''))
+        
+        # 최근 10개 사용자 답변만 사용 (너무 길어지지 않도록)
+        context = "\n\n".join(user_responses[-10:])
+        return context
     
     
     def _build_prompt(self, user_message: str, username: str = "사용자", special_instruction: str = None):
@@ -626,9 +643,12 @@ class ChatbotService:
             if self.dialogue_state == 'NO_EX_CLOSING':
                 print("[FLOW_CONTROL] NO_EX_CLOSING 상태: 리포트 생성 생략")
             elif is_report_request or is_transition_state:
+                # 리포트 생성을 위한 전체 대화 맥락 수집
+                full_context = self._collect_dialogue_context_for_report()
+                
                 if self.dialogue_state == 'CLOSING':
                     if analysis_results['total'] > 0:
-                        report = self.report_generator.generate_emotion_report(analysis_results, username)
+                        report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                         reply += f"\n\n{report}"
                         print("[FLOW_CONTROL] 리포트 생성 완료.")
                 
@@ -637,7 +657,7 @@ class ChatbotService:
                         self.dialogue_state = 'CLOSING'
                         print("[FLOW_CONTROL] 리포트 요청 수락. CLOSING 상태로 전환.")
                         if analysis_results['total'] > 0:
-                            report = self.report_generator.generate_emotion_report(analysis_results, username)
+                            report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                             reply += f"\n\n{report}"
                             print("[FLOW_CONTROL] 리포트 생성 완료.")
                 
@@ -645,7 +665,7 @@ class ChatbotService:
                     self.dialogue_state = 'CLOSING'
                     print("[FLOW_CONTROL] 사용자 리포트 요청. CLOSING 상태로 전환.")
                     if analysis_results['total'] > 0:
-                        report = self.report_generator.generate_emotion_report(analysis_results, username)
+                        report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                         reply += f"\n\n{report}"
                         print("[FLOW_CONTROL] 리포트 생성 완료.")
             
