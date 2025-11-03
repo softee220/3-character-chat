@@ -42,9 +42,9 @@ class ChatbotService:
         # 4. 대화 기록 저장소 초기화
         self.dialogue_history: List[Dict[str, str]] = []
         
-        # 5. 감정 분석 서비스 초기화
-        self.emotion_analyzer = EmotionAnalyzer()
-        self.report_generator = ReportGenerator()
+        # 5. 감정 분석 서비스 초기화 (RAG, OpenAI 클라이언트 주입)
+        self.emotion_analyzer = EmotionAnalyzer(rag_service=self.rag_service, openai_client=self.client)
+        self.report_generator = ReportGenerator(rag_service=self.rag_service, openai_client=self.client)
         
         # 5. DSM 상태 관리 변수 초기화
         self.dialogue_state = 'INITIAL_SETUP'  # 대화 상태
@@ -85,7 +85,75 @@ class ChatbotService:
         # 중단 요청 임계값
         self.stop_request_threshold = flow_control.get('stop_request_threshold', 2)
         
+        # 8. 이미지 매핑 설정
+        self.image_mapping = {
+            'empathy': 'images/chatbot/empathy.png',  # 공감
+            'unconditional_support': 'images/chatbot/support.png',  # 무조건적인 지지
+            'surprise': 'images/chatbot/surprise.png',  # 놀람
+            'firm_advice': 'images/chatbot/advice.png',  # 단호한 조언
+            'laughing': 'images/chatbot/laughing.png',  # 웃는 모습
+            'careful': 'images/chatbot/careful.png'  # 눈치보는 모습
+        }
+        
         print("[ChatbotService] 초기화 완료")
+    
+    
+    def _select_image_by_response(self, reply: str) -> Optional[str]:
+        """
+        AI 응답 내용을 분석하여 적절한 이미지를 선택합니다.
+        
+        Args:
+            reply: AI가 생성한 응답 텍스트
+            
+        Returns:
+            이미지 경로 (/static/... 형태) 또는 None
+        """
+        reply_lower = reply.lower()
+        
+        # 키워드 기반 이미지 선택 로직
+        # 우선순위: 놀람 > 단호한 조언 > 웃는 모습 > 공감 > 무조건적인 지지 > 눈치보는 모습
+        
+        selected_image = None
+        
+        # 1. 놀람 - "와", "헐", "진짜", "대박", "와우" 등의 감탄사
+        surprise_keywords = ['와', '헐', '진짜', '대박', '와우', '오', '놀랐', '신기', '오마이갓', 'ㄹㅇ', '와 진짜']
+        if any(keyword in reply_lower for keyword in surprise_keywords):
+            selected_image = self.image_mapping['surprise']
+        
+        # 2. 단호한 조언 - "해야 해", "해야겠어", "필요해", "중요해", "무조건", "절대"
+        elif any(keyword in reply_lower for keyword in ['해야 해', '해야겠어', '필요해', '중요해', '무조건', '절대', '반드시', 
+                               '제발', '꼭', '해봐', '하세요', '하자', '조언', '추천', '해야 할', '해야 돼']):
+            selected_image = self.image_mapping['firm_advice']
+        
+        # 3. 웃는 모습 - "ㅋㅋ", "하하", "웃", "재밌", "흐흐", 이모지 (😀😆😂)
+        elif any(keyword in reply for keyword in ['ㅋ', '하하', '웃', '재밌', '흐흐', 'ㅎㅎ', '크크', '유쾌']) or \
+             any(emoji in reply for emoji in ['😀', '😆', '😂', '🤣', '😊', '😄']):
+            selected_image = self.image_mapping['laughing']
+        
+        # 4. 공감 - "알겠어", "이해해", "같아", "맞아", "그렇구나", "공감"
+        elif any(keyword in reply_lower for keyword in ['알겠어', '이해해', '같아', '맞아', '그렇구나', '공감', '느껴', '알 것 같아', 
+                          '이해', '알겠다', '그런가', '그런 것 같아', '동감', '맞다고', '그래']):
+            selected_image = self.image_mapping['empathy']
+        
+        # 5. 무조건적인 지지 - "응원", "힘내", "화이팅", "넌 할 수 있어", "믿어", "좋아"
+        elif any(keyword in reply_lower for keyword in ['응원', '힘내', '화이팅', '넌 할 수 있어', '믿어', '좋아', '멋져', '잘했어', 
+                          '고생했어', '수고했어', '훌륭해', '대단해', '괜찮아', '다 괜찮아질 거야']):
+            selected_image = self.image_mapping['unconditional_support']
+        
+        # 6. 눈치보는 모습 - "혹시", "괜찮아?", "불편하면", "부담 갖지 마", "아니면", "안 되면"
+        elif any(keyword in reply_lower for keyword in ['혹시', '괜찮아?', '불편하면', '부담', '아니면', '안 되면', '싫으면', 
+                          '원치 않으면', '괜찮으면', '괜찮다면']):
+            selected_image = self.image_mapping['careful']
+        
+        # 기본값: 공감 (가장 일반적인 반응)
+        else:
+            selected_image = self.image_mapping['empathy']
+        
+        # Flask static 경로로 변환
+        if selected_image:
+            return f"/static/{selected_image}"
+        
+        return None
     
     
     def _get_next_question(self, state: str) -> Optional[str]:
@@ -246,6 +314,23 @@ class ChatbotService:
 분석을 원하면 말해줘!
 """
         return closing_prompt
+    
+    def _collect_dialogue_context_for_report(self) -> str:
+        """
+        리포트 생성을 위한 대화 맥락 수집
+        
+        Returns:
+            str: 사용자의 주요 답변들을 묶은 텍스트
+        """
+        user_responses = []
+        for item in self.dialogue_history:
+            # 혜슬(봇)의 메시지가 아닌 것만 수집
+            if item.get('role') != '혜슬':
+                user_responses.append(item.get('content', ''))
+        
+        # 최근 10개 사용자 답변만 사용 (너무 길어지지 않도록)
+        context = "\n\n".join(user_responses[-10:])
+        return context
     
     
     def _build_prompt(self, user_message: str, username: str = "사용자", special_instruction: str = None):
@@ -626,9 +711,12 @@ class ChatbotService:
             if self.dialogue_state == 'NO_EX_CLOSING':
                 print("[FLOW_CONTROL] NO_EX_CLOSING 상태: 리포트 생성 생략")
             elif is_report_request or is_transition_state:
+                # 리포트 생성을 위한 전체 대화 맥락 수집
+                full_context = self._collect_dialogue_context_for_report()
+                
                 if self.dialogue_state == 'CLOSING':
                     if analysis_results['total'] > 0:
-                        report = self.report_generator.generate_emotion_report(analysis_results, username)
+                        report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                         reply += f"\n\n{report}"
                         print("[FLOW_CONTROL] 리포트 생성 완료.")
                 
@@ -637,7 +725,7 @@ class ChatbotService:
                         self.dialogue_state = 'CLOSING'
                         print("[FLOW_CONTROL] 리포트 요청 수락. CLOSING 상태로 전환.")
                         if analysis_results['total'] > 0:
-                            report = self.report_generator.generate_emotion_report(analysis_results, username)
+                            report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                             reply += f"\n\n{report}"
                             print("[FLOW_CONTROL] 리포트 생성 완료.")
                 
@@ -645,7 +733,7 @@ class ChatbotService:
                     self.dialogue_state = 'CLOSING'
                     print("[FLOW_CONTROL] 사용자 리포트 요청. CLOSING 상태로 전환.")
                     if analysis_results['total'] > 0:
-                        report = self.report_generator.generate_emotion_report(analysis_results, username)
+                        report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                         reply += f"\n\n{report}"
                         print("[FLOW_CONTROL] 리포트 생성 완료.")
             
@@ -656,10 +744,15 @@ class ChatbotService:
             print(f"[BOT] {reply[:100]}...")
             print(f"{'='*50}\n")
             
-            # [10단계] 응답 반환
+            # [10단계] 이미지 선택
+            selected_image = self._select_image_by_response(reply)
+            if selected_image:
+                print(f"[IMAGE] 선택된 이미지: {selected_image}")
+            
+            # [11단계] 응답 반환
             return {
                 'reply': reply,
-                'image': None
+                'image': selected_image
             }
             
         except Exception as e:

@@ -143,6 +143,12 @@ header {
   border-radius: 8px;
 }
 
+.bot-text-container {
+  text-align: left;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
 .bot-text {
   text-align: left;
 }
