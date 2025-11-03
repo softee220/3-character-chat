@@ -46,14 +46,12 @@ async function sendMessage(isInitial = false) {
     removeMessage(loadingId);
 
     // 응답 파싱
-    let replyText, imagePath;
-    if (typeof data.reply === "object" && data.reply !== null) {
-      replyText = data.reply.reply || data.reply;
-      imagePath = data.reply.image || null;
-    } else {
-      replyText = data.reply;
-      imagePath = null;
-    }
+    // 백엔드에서 {reply: "...", image: "..."} 형태로 반환됨
+    const replyText = data.reply || "";
+    const imagePath = data.image || null;
+
+    // 디버깅용 로그
+    console.log("[DEBUG] API 응답:", { replyText: replyText.substring(0, 50), imagePath });
 
     appendMessage("bot", replyText, imagePath);
   } catch (err) {
@@ -76,11 +74,25 @@ function appendMessage(sender, text, imageSrc = null) {
   } else {
     // 이미지가 있으면 먼저 표시
     if (imageSrc) {
+      console.log("[DEBUG] 이미지 추가 중:", imageSrc);
       const botImg = document.createElement("img");
       botImg.classList.add("bot-big-img");
       botImg.src = imageSrc;
       botImg.alt = "챗봇 이미지";
+      
+      // 이미지 로드 에러 처리
+      botImg.onerror = function() {
+        console.error("[ERROR] 이미지 로드 실패:", imageSrc);
+        this.style.display = 'none';
+      };
+      
+      botImg.onload = function() {
+        console.log("[DEBUG] 이미지 로드 성공:", imageSrc);
+      };
+      
       messageElem.appendChild(botImg);
+    } else {
+      console.log("[DEBUG] 이미지 없음 (imageSrc가 null 또는 undefined)");
     }
 
     // 텍스트 추가

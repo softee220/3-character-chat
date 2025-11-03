@@ -85,7 +85,75 @@ class ChatbotService:
         # 중단 요청 임계값
         self.stop_request_threshold = flow_control.get('stop_request_threshold', 2)
         
+        # 8. 이미지 매핑 설정
+        self.image_mapping = {
+            'empathy': 'images/chatbot/empathy.png',  # 공감
+            'unconditional_support': 'images/chatbot/support.png',  # 무조건적인 지지
+            'surprise': 'images/chatbot/surprise.png',  # 놀람
+            'firm_advice': 'images/chatbot/advice.png',  # 단호한 조언
+            'laughing': 'images/chatbot/laughing.png',  # 웃는 모습
+            'careful': 'images/chatbot/careful.png'  # 눈치보는 모습
+        }
+        
         print("[ChatbotService] 초기화 완료")
+    
+    
+    def _select_image_by_response(self, reply: str) -> Optional[str]:
+        """
+        AI 응답 내용을 분석하여 적절한 이미지를 선택합니다.
+        
+        Args:
+            reply: AI가 생성한 응답 텍스트
+            
+        Returns:
+            이미지 경로 (/static/... 형태) 또는 None
+        """
+        reply_lower = reply.lower()
+        
+        # 키워드 기반 이미지 선택 로직
+        # 우선순위: 놀람 > 단호한 조언 > 웃는 모습 > 공감 > 무조건적인 지지 > 눈치보는 모습
+        
+        selected_image = None
+        
+        # 1. 놀람 - "와", "헐", "진짜", "대박", "와우" 등의 감탄사
+        surprise_keywords = ['와', '헐', '진짜', '대박', '와우', '오', '놀랐', '신기', '오마이갓', 'ㄹㅇ', '와 진짜']
+        if any(keyword in reply_lower for keyword in surprise_keywords):
+            selected_image = self.image_mapping['surprise']
+        
+        # 2. 단호한 조언 - "해야 해", "해야겠어", "필요해", "중요해", "무조건", "절대"
+        elif any(keyword in reply_lower for keyword in ['해야 해', '해야겠어', '필요해', '중요해', '무조건', '절대', '반드시', 
+                               '제발', '꼭', '해봐', '하세요', '하자', '조언', '추천', '해야 할', '해야 돼']):
+            selected_image = self.image_mapping['firm_advice']
+        
+        # 3. 웃는 모습 - "ㅋㅋ", "하하", "웃", "재밌", "흐흐", 이모지 (😀😆😂)
+        elif any(keyword in reply for keyword in ['ㅋ', '하하', '웃', '재밌', '흐흐', 'ㅎㅎ', '크크', '유쾌']) or \
+             any(emoji in reply for emoji in ['😀', '😆', '😂', '🤣', '😊', '😄']):
+            selected_image = self.image_mapping['laughing']
+        
+        # 4. 공감 - "알겠어", "이해해", "같아", "맞아", "그렇구나", "공감"
+        elif any(keyword in reply_lower for keyword in ['알겠어', '이해해', '같아', '맞아', '그렇구나', '공감', '느껴', '알 것 같아', 
+                          '이해', '알겠다', '그런가', '그런 것 같아', '동감', '맞다고', '그래']):
+            selected_image = self.image_mapping['empathy']
+        
+        # 5. 무조건적인 지지 - "응원", "힘내", "화이팅", "넌 할 수 있어", "믿어", "좋아"
+        elif any(keyword in reply_lower for keyword in ['응원', '힘내', '화이팅', '넌 할 수 있어', '믿어', '좋아', '멋져', '잘했어', 
+                          '고생했어', '수고했어', '훌륭해', '대단해', '괜찮아', '다 괜찮아질 거야']):
+            selected_image = self.image_mapping['unconditional_support']
+        
+        # 6. 눈치보는 모습 - "혹시", "괜찮아?", "불편하면", "부담 갖지 마", "아니면", "안 되면"
+        elif any(keyword in reply_lower for keyword in ['혹시', '괜찮아?', '불편하면', '부담', '아니면', '안 되면', '싫으면', 
+                          '원치 않으면', '괜찮으면', '괜찮다면']):
+            selected_image = self.image_mapping['careful']
+        
+        # 기본값: 공감 (가장 일반적인 반응)
+        else:
+            selected_image = self.image_mapping['empathy']
+        
+        # Flask static 경로로 변환
+        if selected_image:
+            return f"/static/{selected_image}"
+        
+        return None
     
     
     def _get_next_question(self, state: str) -> Optional[str]:
@@ -676,10 +744,15 @@ class ChatbotService:
             print(f"[BOT] {reply[:100]}...")
             print(f"{'='*50}\n")
             
-            # [10단계] 응답 반환
+            # [10단계] 이미지 선택
+            selected_image = self._select_image_by_response(reply)
+            if selected_image:
+                print(f"[IMAGE] 선택된 이미지: {selected_image}")
+            
+            # [11단계] 응답 반환
             return {
                 'reply': reply,
-                'image': None
+                'image': selected_image
             }
             
         except Exception as e:
