@@ -52,6 +52,7 @@ class ChatbotService:
         self.stop_request_count = 0  # 사용자 대화 중단 요청 횟수
         self.state_turns = 0  # 현재 상태에서 진행된 턴 수
         self.dialogue_states_flow = ['RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_UNRESOLVED', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
+        self.final_regret_score = None  # 리포트 생성 시점의 최종 미련도 점수 저장
         
         # 6. 고정 질문 시스템 초기화
         self.fixed_questions = self.config.get('fixed_questions', {})
@@ -97,6 +98,31 @@ class ChatbotService:
         
         print("[ChatbotService] 초기화 완료")
     
+    
+    def _detect_report_feedback(self, user_message: str) -> bool:
+        """
+        리포트에 대한 피드백인지 감지합니다.
+        
+        Args:
+            user_message: 사용자 메시지
+            
+        Returns:
+            피드백이면 True, 그렇지 않으면 False
+        """
+        feedback_keywords = [
+            '어때', '어떤', '어떻게 생각', '생각해', '생각이', '생각해?', '생각해요',
+            '맞아', '맞다고', '그래', '그렇구나', '알겠어', '이해했어',
+            '재밌어', '좋아', '괜찮아', '괜찮네', '재미있어',
+            '신기해', '대박', '와', '헐', '진짜', '와우',
+            '그렇네', '그런가', '흠', '음', '아', '오',
+            '결과', '리포트', '분석', '점수', '미련도',
+            '어울려', '어울리', '프로그램', '프로그램이'
+        ]
+        
+        message_lower = user_message.lower()
+        
+        # 리포트 피드백 키워드 포함 여부 확인
+        return any(keyword in message_lower for keyword in feedback_keywords)
     
     def _select_image_by_response(self, reply: str) -> Optional[str]:
         """
@@ -394,6 +420,7 @@ class ChatbotService:
                 self.dialogue_history = []
                 self.question_indices = {state: 0 for state in self.fixed_questions.keys()}
                 self.tail_question_used = {state: False for state in self.fixed_questions.keys()}
+                self.final_regret_score = None  # 초기화 시점에 리셋
                 
                 reply = f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지마마 그냥 친구한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
                 self.dialogue_history.append({"role": "혜슬", "content": reply})
@@ -466,10 +493,10 @@ class ChatbotService:
             # [턴 트래킹] 상태 전환 감지 및 state_turns 관리
             previous_state = self.dialogue_state
             
-            # [4단계] 연애 감정 분석 수행 (NO_EX_CLOSING 상태에서는 생략)
-            if self.dialogue_state == 'NO_EX_CLOSING':
+            # [4단계] 연애 감정 분석 수행 (NO_EX_CLOSING, REPORT_SHOWN, FINAL_CLOSING 상태에서는 생략)
+            if self.dialogue_state in ['NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
                 analysis_results = {'total': 0, 'attachment': 0, 'regret': 0, 'unresolved': 0, 'comparison': 0, 'avoidance': 0}
-                print(f"[ANALYSIS] NO_EX_CLOSING 상태: 감정 분석 생략")
+                print(f"[ANALYSIS] {self.dialogue_state} 상태: 감정 분석 생략")
             else:
                 analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
                 print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
@@ -479,7 +506,7 @@ class ChatbotService:
             if (self.dialogue_state in self.fixed_questions and 
                 not special_instruction and 
                 not deviation_type and
-                self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING']):
+                self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']):
                 
                 # 고정 질문이 아직 남아있는지 확인
                 if not self._is_questions_exhausted(self.dialogue_state):
@@ -512,7 +539,7 @@ class ChatbotService:
             # [5단계] 상태 전환 조건 체크 (우선순위: 턴 수 → 질문 소진 → 점수)
             bridge_prompt_added = False
             
-            if previous_state != 'INITIAL_SETUP' and previous_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING']:
+            if previous_state != 'INITIAL_SETUP' and previous_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
                 # 조건 1: 턴 수 초과
                 if self.state_turns >= self.max_state_turns:
                     # 다음 상태로 전환
@@ -631,13 +658,13 @@ class ChatbotService:
 """
             
             # 조기 종료: 미련도 낮을 때
-            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING', 'NO_EX_CLOSING']:
+            if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
                 self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                 if not special_instruction:
                     special_instruction = "\n[조기 종료]: 와, 너 완전히 정리했네! 그럼 여기서 인터뷰 마무리하고 AI 분석 리포트 바로 볼래?"
             
             # 총 턴 수 임계값
-            if self.turn_count >= self.max_total_turns and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING']:
+            if self.turn_count >= self.max_total_turns and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
                 self.dialogue_state = 'TRANSITION_NATURAL_REPORT'
                 if not special_instruction:
                     special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
@@ -646,8 +673,8 @@ class ChatbotService:
             if previous_state != self.dialogue_state:
                 self.state_turns = 1
                 print(f"[FLOW_CONTROL] 상태 전환: {previous_state} → {self.dialogue_state}")
-                # 상태 전환 시 꼬리 질문 플래그 리셋
-                if self.dialogue_state in self.tail_question_used:
+                # 상태 전환 시 꼬리 질문 플래그 리셋 (REPORT_SHOWN, FINAL_CLOSING 제외)
+                if self.dialogue_state in self.tail_question_used and self.dialogue_state not in ['REPORT_SHOWN', 'FINAL_CLOSING']:
                     self.tail_question_used[self.dialogue_state] = False
             else:
                 self.state_turns += 1
@@ -704,6 +731,40 @@ class ChatbotService:
             else:
                 reply = "AI 연애 분석 에이전트 데모 모드야. 환경변수 설정 후 더 정교한 분석이 가능해!"
             
+            # [7.5단계] 리포트 피드백 처리 (REPORT_SHOWN 상태)
+            if self.dialogue_state == 'REPORT_SHOWN':
+                if self._detect_report_feedback(user_message):
+                    # 피드백 감지됨 - 미련도에 따라 종료 이미지 선택
+                    if self.final_regret_score is not None:
+                        if self.final_regret_score <= 50:
+                            # 미련도 50% 이하
+                            selected_image = "/static/images/chatbot/regretX_program.png"
+                            closing_message = "와, 결과 보고 어떻게 생각했어? ㅋㅋㅋ 너는 이런 프로그램이 잘 어울리겠다!"
+                        else:
+                            # 미련도 50% 초과
+                            selected_image = "/static/images/chatbot/regretO_program.png"
+                            closing_message = "와, 결과 보고 어떻게 생각했어? ㅋㅋㅋ 너는 이런 프로그램이 잘 어울리겠다!"
+                        
+                        print(f"[FLOW_CONTROL] 리포트 피드백 감지. 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
+                        
+                        # 대화 종료 상태로 변경
+                        self.dialogue_state = 'FINAL_CLOSING'
+                        
+                        # 사용자 메시지와 종료 메시지를 대화 기록에 추가
+                        self.dialogue_history.append({"role": username, "content": user_message})
+                        self.dialogue_history.append({"role": "혜슬", "content": closing_message})
+                        
+                        return {
+                            'reply': closing_message,
+                            'image': selected_image
+                        }
+                    else:
+                        # 미련도 점수가 없는 경우 (예외 처리)
+                        print("[WARNING] final_regret_score가 None입니다.")
+                else:
+                    # 피드백이 아닌 경우 - 일반 응답 계속
+                    pass
+            
             # [8단계] 감정 리포트 생성 (특정 조건, NO_EX_CLOSING 상태에서는 생략)
             is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
             is_transition_state = self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']
@@ -716,26 +777,53 @@ class ChatbotService:
                 
                 if self.dialogue_state == 'CLOSING':
                     if analysis_results['total'] > 0:
+                        # 최종 미련도 점수 저장
+                        self.final_regret_score = analysis_results['total']
                         report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                         reply += f"\n\n{report}"
-                        print("[FLOW_CONTROL] 리포트 생성 완료.")
+                        
+                        # 리포트 표시 후 "결과에 대해서 어떻게 생각해?" 질문 추가
+                        feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
+                        reply += feedback_question
+                        
+                        # 리포트 표시 완료 상태로 전환
+                        self.dialogue_state = 'REPORT_SHOWN'
+                        print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
                 
                 elif self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT']:
                     if is_report_request:
                         self.dialogue_state = 'CLOSING'
                         print("[FLOW_CONTROL] 리포트 요청 수락. CLOSING 상태로 전환.")
                         if analysis_results['total'] > 0:
+                            # 최종 미련도 점수 저장
+                            self.final_regret_score = analysis_results['total']
                             report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                             reply += f"\n\n{report}"
-                            print("[FLOW_CONTROL] 리포트 생성 완료.")
+                            
+                            # 리포트 표시 후 피드백 질문 추가
+                            feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
+                            reply += feedback_question
+                            
+                            # 리포트 표시 완료 상태로 전환
+                            self.dialogue_state = 'REPORT_SHOWN'
+                            print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
                 
                 elif is_report_request:
                     self.dialogue_state = 'CLOSING'
                     print("[FLOW_CONTROL] 사용자 리포트 요청. CLOSING 상태로 전환.")
                     if analysis_results['total'] > 0:
+                        # 최종 미련도 점수 저장
+                        self.final_regret_score = analysis_results['total']
                         report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
                         reply += f"\n\n{report}"
-                        print("[FLOW_CONTROL] 리포트 생성 완료.")
+                        
+                        # 리포트 표시 후 피드백 질문 추가
+                        feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
+                        reply += feedback_question
+                        
+                        # 리포트 표시 완료 상태로 전환
+                        self.dialogue_state = 'REPORT_SHOWN'
+                        print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
             
             # [9단계] 대화 기록 저장
             self.dialogue_history.append({"role": username, "content": user_message})
