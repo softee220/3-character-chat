@@ -51,7 +51,7 @@ class ChatbotService:
         self.turn_count = 0  # 대화 턴 수 추적
         self.stop_request_count = 0  # 사용자 대화 중단 요청 횟수
         self.state_turns = 0  # 현재 상태에서 진행된 턴 수
-        self.dialogue_states_flow = ['RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_UNRESOLVED', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
+        self.dialogue_states_flow = ['RECALL_UNRESOLVED', 'RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
         self.final_regret_score = None  # 리포트 생성 시점의 최종 미련도 점수 저장
         
         # 6. 고정 질문 시스템 초기화
@@ -304,7 +304,30 @@ class ChatbotService:
         """
         next_question = self._get_next_question(next_state)
         
-        bridge_prompt = f"""
+        # UNRESOLVED → ATTACHMENT 전환 시 특별한 프롬프트 사용
+        if current_state == 'RECALL_UNRESOLVED' and next_state == 'RECALL_ATTACHMENT':
+            bridge_prompt = f"""
+[상태 전환 지시 - UNRESOLVED → ATTACHMENT]
+현재 상태: {current_state} → 다음 상태: {next_state}
+전환 이유: {transition_reason}
+
+이별의 맥락을 듣고 나서, 이제 처음 만났을 때나 좋았던 순간들을 떠올려보는 자연스러운 흐름으로 전환해야 해.
+
+**전환 전략:**
+
+1. 사용자가 말한 이별/미해결 감정에 대해 짧게 공감하거나 고개를 끄덕이는 듯한 반응
+
+2. "그래도", "그런데", "생각해보니" 같은 전환어를 사용해서 자연스럽게 긍정적인 기억으로 넘어가기
+
+3. 마치 대화가 자연스럽게 흘러가는 것처럼, 질문이 끼어드는 느낌이 들지 않게
+
+다음 질문: {next_question}
+
+친근한 친구 말투로, 마치 대화 흐름상 자연스럽게 떠올린 것처럼 물어보세요.
+"""
+        else:
+            # 다른 상태 전환은 기존 로직 사용
+            bridge_prompt = f"""
 [상태 전환 지시]
 현재 상태: {current_state} → 다음 상태: {next_state}
 전환 이유: {transition_reason}
@@ -614,47 +637,50 @@ class ChatbotService:
                 negative_keywords = ['싫어', '안 해', '못 해', '그만', '바빠']
                 
                 if any(keyword in user_message for keyword in positive_keywords):
-                    self.dialogue_state = 'RECALL_ATTACHMENT'
-                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_ATTACHMENT")
+                    self.dialogue_state = 'RECALL_UNRESOLVED'
+                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_UNRESOLVED")
                     if not special_instruction:
-                        special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 첫만남을 묻는 질문을 시작해"
+                        # 첫 번째 고정 질문을 명시적으로 던지도록 설정
+                        first_question = self._get_next_question('RECALL_UNRESOLVED')
+                        if first_question:
+                            special_instruction = f"\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 다음 질문을 자연스럽게 물어봐: {first_question}"
+                            # 첫 번째 질문을 사용했으므로 인덱스 증가
+                            self._mark_question_used('RECALL_UNRESOLVED')
+                            self.tail_question_used['RECALL_UNRESOLVED'] = True
+                        else:
+                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 물어봐"
                 elif any(keyword in user_message for keyword in negative_keywords):
                     print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
                     if not special_instruction:
                         special_instruction = "\n[INITIAL_SETUP 설득]: 야! 난 네 친구잖아. PD가 된 친구를 도와준다고 생각해줘. 그래도 정말 안 되면 어쩔 수 없지만ㅠㅠ **다른 연애 이야기는 절대 안 돼!** 우리 기획은 오직 '전 애인 X와의 미련도'만 분석하는 거라서, 꼭 그 X 얘기만 들어야 해. 하나만이라도 괜찮아, 그냥 어떤 순간이었는지만 얘기해줘! 절대 다른 주제로 대화를 바꾸지 마."
             
-            # [X 스토리 부재 감지] - INITIAL_SETUP 이후 또는 초반 대화 중
-            if self._detect_no_ex_story(user_message) and self.dialogue_state != 'NO_EX_CLOSING':
+            # [X 스토리 부재 감지] - INITIAL_SETUP 단계에서만 감지
+            if self.dialogue_state == 'INITIAL_SETUP' and self._detect_no_ex_story(user_message):
                 print("[FLOW_CONTROL] X 스토리 부재 감지. 친구 위로 후 종료.")
                 
                 # 상태를 종료 상태로 전환
                 self.dialogue_state = 'NO_EX_CLOSING'
                 
-                # 친구 위로 프롬프트
-                special_instruction = """
-[X 스토리 부재 - 친구 위로 모드]
-
-사용자가 전애인(X)이 없다고 말했습니다. 
-환승연애 AI 데모는 연애 경험만 분석할 수 있다는 점을 친구답게 설명하고,
-따뜻하게 위로하며 대화를 마무리하세요.
-
-**필수 포함 내용:**
-1. "미안, 환승연애 데모 AI는 연애 경험만 받는대 ㅜㅜ" (기획 한계 설명)
-2. "내가 너 사랑하는 거 알지?" (친구로서의 애정 표현)
-3. "전 애인 없어도 넌 내가 있으니까 괜찮아" (위로)
-4. "같이 술 먹으러 가자 ㅎㅎ" 또는 유사한 친구다운 제안 (자연스러운 마무리)
-
-**톤:**
-- 미안해하지만 무겁지 않게
-- 친구로서 진심 어린 위로
-- 가볍고 따뜻한 마무리
-
-**예시:**
-"아 그렇구나ㅠㅠ 미안해, 사실 환승연애 데모 AI가 연애 경험만 받는대... 
+                # 고정 답변 생성 (PD 직업 특징 활용)
+                fixed_reply = f"""아 그렇구나ㅠㅠ 미안해, 사실 환승연애 데모 AI가 연애 경험만 받는대... 
 내가 PD 일 때문에 너한테 이런 질문까지 하게 돼서 좀 미안하다. 
 근데 있잖아, 내가 너 사랑하는 거 알지? 전 애인 없어도 넌 내가 있으니까 괜찮아! 
-오늘 저녁에 같이 술 먹으러 가자 ㅎㅎ 내가 쏠게~"
-"""
+
+아 맞다! 우리 팀에 "모솔이지만 연애는 하고 싶어" PD 랑 지인 있는데,
+혹시 관심 있으면 연결해줄게 ㅎㅎ"""
+                
+                # 대화 기록 저장
+                self.dialogue_history.append({"role": username, "content": user_message})
+                self.dialogue_history.append({"role": "혜슬", "content": fixed_reply})
+                
+                print(f"[BOT] {fixed_reply[:100]}...")
+                print(f"{'='*50}\n")
+                
+                # 고정 답변 반환 (LLM 호출 없이)
+                return {
+                    'reply': fixed_reply,
+                    'image': "/static/images/chatbot/01_smile.png"
+                }
             
             # 조기 종료: 미련도 낮을 때
             if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
