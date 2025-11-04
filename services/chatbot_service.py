@@ -422,7 +422,7 @@ class ChatbotService:
                 self.tail_question_used = {state: False for state in self.fixed_questions.keys()}
                 self.final_regret_score = None  # 초기화 시점에 리셋
                 
-                reply = f"야, {username}! 나 요즘 일이 너무 재밌어ㅋㅋ 드디어 환승연애 막내 PD 됐거든!\n 근데 재밌는 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아?\n 내가 요즘 그거 관련해서 연애 사례 모으고 있는데, 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고 그냥 나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ \n너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
+                reply = f"야, {username}! 나 요즘 일이 너무 재밌어ㅋㅋ 드디어 환승연애 막내 PD 됐거든!\n근데 재밌는 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아?\n 내가 요즘 그거 관련해서 연애 사례 모으고 있는데, 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고 그냥 나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ \n너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
                 self.dialogue_history.append({"role": "이다음", "content": reply})
                 return {'reply': reply, 'image': "/static/images/chatbot/01_main.png"}
             
@@ -733,37 +733,33 @@ class ChatbotService:
             
             # [7.5단계] 리포트 피드백 처리 (REPORT_SHOWN 상태)
             if self.dialogue_state == 'REPORT_SHOWN':
-                if self._detect_report_feedback(user_message):
-                    # 피드백 감지됨 - 미련도에 따라 종료 이미지 선택
-                    if self.final_regret_score is not None:
-                        if self.final_regret_score <= 50:
-                            # 미련도 50% 이하
-                            selected_image = "/static/images/chatbot/regretX_program.png"
-                            closing_message = "야... 이제 넌 미련이 거의 없구나 잘됐다! 새로 프로그램 기획하고 있는데 차라리 여기 한번 면접 볼래?"
-                        else:
-                            # 미련도 50% 초과
-                            selected_image = "/static/images/chatbot/regretO_program.png"
-                            closing_message = "아직 미련이 많이 남았네 ㅜㅜ 이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게!"
-                        
-                        print(f"[FLOW_CONTROL] 리포트 피드백 감지. 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
-                        
-                        # 대화 종료 상태로 변경
-                        self.dialogue_state = 'FINAL_CLOSING'
-                        
-                        # 사용자 메시지와 종료 메시지를 대화 기록에 추가
-                        self.dialogue_history.append({"role": username, "content": user_message})
-                        self.dialogue_history.append({"role": "혜슬", "content": closing_message})
-                        
-                        return {
-                            'reply': closing_message,
-                            'image': selected_image
-                        }
+                # REPORT_SHOWN 상태에서는 어떤 입력이든 피드백으로 처리
+                if self.final_regret_score is not None:
+                    if self.final_regret_score <= 50:
+                        # 미련도 50% 이하
+                        selected_image = "/static/images/chatbot/regretX_program.png"
+                        closing_message = "야... 이제 넌 미련이 거의 없구나 잘됐다! 새로 프로그램 기획하고 있는데 차라리 여기 한번 면접 볼래? 아무튼 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎㅎ"
                     else:
-                        # 미련도 점수가 없는 경우 (예외 처리)
-                        print("[WARNING] final_regret_score가 None입니다.")
+                        # 미련도 50% 초과
+                        selected_image = "/static/images/chatbot/regretO_program.png"
+                        closing_message = "아직 미련이 많이 남았네 ㅜㅜ 이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게! 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎ"
+                    
+                    print(f"[FLOW_CONTROL] 리포트 피드백 처리 (모든 입력 허용). 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
+                    
+                    # 대화 종료 상태로 변경
+                    self.dialogue_state = 'FINAL_CLOSING'
+                    
+                    # 사용자 메시지와 종료 메시지를 대화 기록에 추가
+                    self.dialogue_history.append({"role": username, "content": user_message})
+                    self.dialogue_history.append({"role": "혜슬", "content": closing_message})
+                    
+                    return {
+                        'reply': closing_message,
+                        'image': selected_image
+                    }
                 else:
-                    # 피드백이 아닌 경우 - 일반 응답 계속
-                    pass
+                    # 미련도 점수가 없는 경우 (예외 처리)
+                    print("[WARNING] final_regret_score가 None입니다.")
             
             # [8단계] 감정 리포트 생성 (특정 조건, NO_EX_CLOSING 상태에서는 생략)
             is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
@@ -833,9 +829,16 @@ class ChatbotService:
             print(f"{'='*50}\n")
             
             # [10단계] 이미지 선택
-            selected_image = self._select_image_by_response(reply)
-            if selected_image:
-                print(f"[IMAGE] 선택된 이미지: {selected_image}")
+            # 리포트가 포함된 경우 고정 이미지 사용
+            if self.dialogue_state in ['CLOSING', 'REPORT_SHOWN']:
+                # 감정 리포트가 표시된 경우 고정 이미지
+                selected_image = "/static/images/chatbot/01_smile.png"
+                print(f"[IMAGE] 리포트 표시 중: 고정 이미지 사용 - {selected_image}")
+            else:
+                # 일반 대화에서는 키워드 기반 이미지 선택
+                selected_image = self._select_image_by_response(reply)
+                if selected_image:
+                    print(f"[IMAGE] 선택된 이미지: {selected_image}")
             
             # [11단계] 응답 반환
             return {
