@@ -51,7 +51,7 @@ class ChatbotService:
         self.turn_count = 0  # 대화 턴 수 추적
         self.stop_request_count = 0  # 사용자 대화 중단 요청 횟수
         self.state_turns = 0  # 현재 상태에서 진행된 턴 수
-        self.dialogue_states_flow = ['RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_UNRESOLVED', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
+        self.dialogue_states_flow = ['RECALL_UNRESOLVED', 'RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
         self.final_regret_score = None  # 리포트 생성 시점의 최종 미련도 점수 저장
         
         # 6. 고정 질문 시스템 초기화
@@ -88,12 +88,12 @@ class ChatbotService:
         
         # 8. 이미지 매핑 설정
         self.image_mapping = {
-            'empathy': 'images/chatbot/empathy.png',  # 공감
-            'unconditional_support': 'images/chatbot/support.png',  # 무조건적인 지지
-            'surprise': 'images/chatbot/surprise.png',  # 놀람
-            'firm_advice': 'images/chatbot/advice.png',  # 단호한 조언
-            'laughing': 'images/chatbot/laughing.png',  # 웃는 모습
-            'careful': 'images/chatbot/careful.png'  # 눈치보는 모습
+            'empathy': 'images/chatbot/01_empathy.png',  # 공감
+            'unconditional_support': 'images/chatbot/01_support.png',  # 무조건적인 지지
+            'surprise': 'images/chatbot/01_surprised.png',  # 놀람
+            'firm_advice': 'images/chatbot/01_advice.png',  # 단호한 조언
+            'laughing': 'images/chatbot/01_smile.png',  # 웃는 모습
+            'careful': 'images/chatbot/01_careful.png'  # 눈치보는 모습
         }
         
         print("[ChatbotService] 초기화 완료")
@@ -305,7 +305,30 @@ class ChatbotService:
         """
         next_question = self._get_next_question(next_state)
         
-        bridge_prompt = f"""
+        # UNRESOLVED → ATTACHMENT 전환 시 특별한 프롬프트 사용
+        if current_state == 'RECALL_UNRESOLVED' and next_state == 'RECALL_ATTACHMENT':
+            bridge_prompt = f"""
+[상태 전환 지시 - UNRESOLVED → ATTACHMENT]
+현재 상태: {current_state} → 다음 상태: {next_state}
+전환 이유: {transition_reason}
+
+이별의 맥락을 듣고 나서, 이제 처음 만났을 때나 좋았던 순간들을 떠올려보는 자연스러운 흐름으로 전환해야 해.
+
+**전환 전략:**
+
+1. 사용자가 말한 이별/미해결 감정에 대해 짧게 공감하거나 고개를 끄덕이는 듯한 반응
+
+2. "그래도", "그런데", "생각해보니" 같은 전환어를 사용해서 자연스럽게 긍정적인 기억으로 넘어가기
+
+3. 마치 대화가 자연스럽게 흘러가는 것처럼, 질문이 끼어드는 느낌이 들지 않게
+
+다음 질문: {next_question}
+
+친근한 친구 말투로, 마치 대화 흐름상 자연스럽게 떠올린 것처럼 물어보세요.
+"""
+        else:
+            # 다른 상태 전환은 기존 로직 사용
+            bridge_prompt = f"""
 [상태 전환 지시]
 현재 상태: {current_state} → 다음 상태: {next_state}
 전환 이유: {transition_reason}
@@ -422,9 +445,9 @@ class ChatbotService:
                 self.tail_question_used = {state: False for state in self.fixed_questions.keys()}
                 self.final_regret_score = None  # 초기화 시점에 리셋
                 
-                reply = f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고고 그냥 나나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
-                self.dialogue_history.append({"role": "혜슬", "content": reply})
-                return {'reply': reply, 'image': "static/images/chatbot/main.png"}
+                reply = f"야, {username}! 나 요즘 일이 너무 재밌어ㅋㅋ 드디어 환승연애 막내 PD 됐거든!\n근데 재밌는 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아?\n 내가 요즘 그거 관련해서 연애 사례 모으고 있는데, 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고 그냥 나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ \n너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
+                self.dialogue_history.append({"role": "이다음", "content": reply})
+                return {'reply': reply, 'image': "/static/images/chatbot/01_main.png"}
             
             # [2단계] 중단 요청 처리 (turn_count 증가 전)
             stop_keywords = [
@@ -615,47 +638,50 @@ class ChatbotService:
                 negative_keywords = ['싫어', '안 해', '못 해', '그만', '바빠']
                 
                 if any(keyword in user_message for keyword in positive_keywords):
-                    self.dialogue_state = 'RECALL_ATTACHMENT'
-                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_ATTACHMENT")
+                    self.dialogue_state = 'RECALL_UNRESOLVED'
+                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_UNRESOLVED")
                     if not special_instruction:
-                        special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 첫만남을 묻는 질문을 시작해"
+                        # 첫 번째 고정 질문을 명시적으로 던지도록 설정
+                        first_question = self._get_next_question('RECALL_UNRESOLVED')
+                        if first_question:
+                            special_instruction = f"\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 다음 질문을 자연스럽게 물어봐: {first_question}"
+                            # 첫 번째 질문을 사용했으므로 인덱스 증가
+                            self._mark_question_used('RECALL_UNRESOLVED')
+                            self.tail_question_used['RECALL_UNRESOLVED'] = True
+                        else:
+                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 물어봐"
                 elif any(keyword in user_message for keyword in negative_keywords):
                     print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
                     if not special_instruction:
                         special_instruction = "\n[INITIAL_SETUP 설득]: 야! 난 네 친구잖아. PD가 된 친구를 도와준다고 생각해줘. 그래도 정말 안 되면 어쩔 수 없지만ㅠㅠ **다른 연애 이야기는 절대 안 돼!** 우리 기획은 오직 '전 애인 X와의 미련도'만 분석하는 거라서, 꼭 그 X 얘기만 들어야 해. 하나만이라도 괜찮아, 그냥 어떤 순간이었는지만 얘기해줘! 절대 다른 주제로 대화를 바꾸지 마."
             
-            # [X 스토리 부재 감지] - INITIAL_SETUP 이후 또는 초반 대화 중
-            if self._detect_no_ex_story(user_message) and self.dialogue_state != 'NO_EX_CLOSING':
+            # [X 스토리 부재 감지] - INITIAL_SETUP 단계에서만 감지
+            if self.dialogue_state == 'INITIAL_SETUP' and self._detect_no_ex_story(user_message):
                 print("[FLOW_CONTROL] X 스토리 부재 감지. 친구 위로 후 종료.")
                 
                 # 상태를 종료 상태로 전환
                 self.dialogue_state = 'NO_EX_CLOSING'
                 
-                # 친구 위로 프롬프트
-                special_instruction = """
-[X 스토리 부재 - 친구 위로 모드]
-
-사용자가 전애인(X)이 없다고 말했습니다. 
-환승연애 AI 데모는 연애 경험만 분석할 수 있다는 점을 친구답게 설명하고,
-따뜻하게 위로하며 대화를 마무리하세요.
-
-**필수 포함 내용:**
-1. "미안, 환승연애 데모 AI는 연애 경험만 받는대 ㅜㅜ" (기획 한계 설명)
-2. "내가 너 사랑하는 거 알지?" (친구로서의 애정 표현)
-3. "전 애인 없어도 넌 내가 있으니까 괜찮아" (위로)
-4. "같이 술 먹으러 가자 ㅎㅎ" 또는 유사한 친구다운 제안 (자연스러운 마무리)
-
-**톤:**
-- 미안해하지만 무겁지 않게
-- 친구로서 진심 어린 위로
-- 가볍고 따뜻한 마무리
-
-**예시:**
-"아 그렇구나ㅠㅠ 미안해, 사실 환승연애 데모 AI가 연애 경험만 받는대... 
+                # 고정 답변 생성 (PD 직업 특징 활용)
+                fixed_reply = f"""아 그렇구나ㅠㅠ 미안해, 사실 환승연애 데모 AI가 연애 경험만 받는대... 
 내가 PD 일 때문에 너한테 이런 질문까지 하게 돼서 좀 미안하다. 
 근데 있잖아, 내가 너 사랑하는 거 알지? 전 애인 없어도 넌 내가 있으니까 괜찮아! 
-오늘 저녁에 같이 술 먹으러 가자 ㅎㅎ 내가 쏠게~"
-"""
+
+아 맞다! 우리 팀에 "모솔이지만 연애는 하고 싶어" PD 랑 지인 있는데,
+혹시 관심 있으면 연결해줄게 ㅎㅎ"""
+                
+                # 대화 기록 저장
+                self.dialogue_history.append({"role": username, "content": user_message})
+                self.dialogue_history.append({"role": "혜슬", "content": fixed_reply})
+                
+                print(f"[BOT] {fixed_reply[:100]}...")
+                print(f"{'='*50}\n")
+                
+                # 고정 답변 반환 (LLM 호출 없이)
+                return {
+                    'reply': fixed_reply,
+                    'image': "/static/images/chatbot/01_smile.png"
+                }
             
             # 조기 종료: 미련도 낮을 때
             if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
@@ -733,37 +759,33 @@ class ChatbotService:
             
             # [7.5단계] 리포트 피드백 처리 (REPORT_SHOWN 상태)
             if self.dialogue_state == 'REPORT_SHOWN':
-                if self._detect_report_feedback(user_message):
-                    # 피드백 감지됨 - 미련도에 따라 종료 이미지 선택
-                    if self.final_regret_score is not None:
-                        if self.final_regret_score <= 50:
-                            # 미련도 50% 이하
-                            selected_image = "/static/images/chatbot/regretX_program.png"
-                            closing_message = "와, 결과 보고 어떻게 생각했어? ㅋㅋㅋ 너는 이런 프로그램이 잘 어울리겠다!"
-                        else:
-                            # 미련도 50% 초과
-                            selected_image = "/static/images/chatbot/regretO_program.png"
-                            closing_message = "와, 결과 보고 어떻게 생각했어? ㅋㅋㅋ 너는 이런 프로그램이 잘 어울리겠다!"
-                        
-                        print(f"[FLOW_CONTROL] 리포트 피드백 감지. 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
-                        
-                        # 대화 종료 상태로 변경
-                        self.dialogue_state = 'FINAL_CLOSING'
-                        
-                        # 사용자 메시지와 종료 메시지를 대화 기록에 추가
-                        self.dialogue_history.append({"role": username, "content": user_message})
-                        self.dialogue_history.append({"role": "혜슬", "content": closing_message})
-                        
-                        return {
-                            'reply': closing_message,
-                            'image': selected_image
-                        }
+                # REPORT_SHOWN 상태에서는 어떤 입력이든 피드백으로 처리
+                if self.final_regret_score is not None:
+                    if self.final_regret_score <= 50:
+                        # 미련도 50% 이하
+                        selected_image = "/static/images/chatbot/regretX_program.png"
+                        closing_message = "야... 이제 넌 미련이 거의 없구나 잘됐다! 새로 프로그램 기획하고 있는데 차라리 여기 한번 면접 볼래? 아무튼 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎㅎ"
                     else:
-                        # 미련도 점수가 없는 경우 (예외 처리)
-                        print("[WARNING] final_regret_score가 None입니다.")
+                        # 미련도 50% 초과
+                        selected_image = "/static/images/chatbot/regretO_program.png"
+                        closing_message = "아직 미련이 많이 남았네 ㅜㅜ 이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게! 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎ"
+                    
+                    print(f"[FLOW_CONTROL] 리포트 피드백 처리 (모든 입력 허용). 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
+                    
+                    # 대화 종료 상태로 변경
+                    self.dialogue_state = 'FINAL_CLOSING'
+                    
+                    # 사용자 메시지와 종료 메시지를 대화 기록에 추가
+                    self.dialogue_history.append({"role": username, "content": user_message})
+                    self.dialogue_history.append({"role": "혜슬", "content": closing_message})
+                    
+                    return {
+                        'reply': closing_message,
+                        'image': selected_image
+                    }
                 else:
-                    # 피드백이 아닌 경우 - 일반 응답 계속
-                    pass
+                    # 미련도 점수가 없는 경우 (예외 처리)
+                    print("[WARNING] final_regret_score가 None입니다.")
             
             # [8단계] 감정 리포트 생성 (특정 조건, NO_EX_CLOSING 상태에서는 생략)
             is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
@@ -833,9 +855,16 @@ class ChatbotService:
             print(f"{'='*50}\n")
             
             # [10단계] 이미지 선택
-            selected_image = self._select_image_by_response(reply)
-            if selected_image:
-                print(f"[IMAGE] 선택된 이미지: {selected_image}")
+            # 리포트가 포함된 경우 고정 이미지 사용
+            if self.dialogue_state in ['CLOSING', 'REPORT_SHOWN']:
+                # 감정 리포트가 표시된 경우 고정 이미지
+                selected_image = "/static/images/chatbot/01_smile.png"
+                print(f"[IMAGE] 리포트 표시 중: 고정 이미지 사용 - {selected_image}")
+            else:
+                # 일반 대화에서는 키워드 기반 이미지 선택
+                selected_image = self._select_image_by_response(reply)
+                if selected_image:
+                    print(f"[IMAGE] 선택된 이미지: {selected_image}")
             
             # [11단계] 응답 반환
             return {
