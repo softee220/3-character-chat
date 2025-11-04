@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import chromadb
 from openai import OpenAI
+import json
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -185,3 +186,102 @@ class RAGService:
         except Exception as e:
             print(f"[ERROR] RAG 검색 실패: {e}")
             return None, None, None
+    
+    def search_similar_cases(self, query: str, top_k: int = 3) -> List[Dict]:
+        """
+        analyzed_cases.jsonl에서 유사한 사례 검색
+        
+        Args:
+            query (str): 검색 질의 (사용자 답변)
+            top_k (int): 반환할 상위 사례 개수
+        
+        Returns:
+            List[Dict]: 상위 k개 사례 리스트 (analysis 정보 포함)
+        """
+        try:
+            # analyzed_cases.jsonl 파일 로드
+            jsonl_path = BASE_DIR / "static" / "data" / "chatbot" / "analyzed_cases.jsonl"
+            
+            if not jsonl_path.exists():
+                print(f"[WARNING] analyzed_cases.jsonl을 찾을 수 없습니다: {jsonl_path}")
+                return []
+            
+            # 쿼리 임베딩 생성
+            if not self.client:
+                return []
+            
+            query_embedding = self.create_embedding(query)
+            if not query_embedding:
+                return []
+            
+            # JSONL 파일 읽기 및 사례 임베딩
+            cases = []
+            content = jsonl_path.open('r', encoding='utf-8').read()
+            
+            # 중첩된 JSON 객체들을 올바르게 파싱
+            # 각 케이스는 별도의 JSON 객체로 줄바꿈과 쉼표로 구분됨
+            lines = content.split('\n')
+            current_json = ""
+            brace_count = 0
+            
+            for line in lines:
+                line = line.strip()
+                if not line or line == ',':
+                    continue
+                
+                current_json += line + '\n'
+                brace_count += line.count('{') - line.count('}')
+                
+                # 중괄호가 균형을 이뤘으면 하나의 JSON 객체 완성
+                if brace_count == 0 and current_json.strip():
+                    try:
+                        case = json.loads(current_json.strip())
+                        # summary를 임베딩하여 유사도 계산
+                        summary = case.get('summary', '')
+                        if summary:
+                            summary_embedding = self.create_embedding(summary)
+                            if summary_embedding:
+                                # 코사인 유사도 계산
+                                similarity = self._cosine_similarity(query_embedding, summary_embedding)
+                                case['similarity'] = similarity
+                                cases.append(case)
+                    except json.JSONDecodeError as e:
+                        print(f"[WARNING] JSON 파싱 실패: {current_json[:50]}... - {e}")
+                    current_json = ""
+                    brace_count = 0
+            
+            # 유사도 기준 정렬 및 상위 k개 반환
+            cases.sort(key=lambda x: x['similarity'], reverse=True)
+            top_cases = cases[:top_k]
+            
+            print(f"[RAG] 유사 사례 검색 완료: {len(top_cases)}개")
+            for i, case in enumerate(top_cases, 1):
+                print(f"  [{i}] 유사도: {case['similarity']:.4f}, ID: {case.get('id', 'unknown')}")
+            
+            return top_cases
+            
+        except Exception as e:
+            print(f"[ERROR] 사례 검색 실패: {e}")
+            return []
+    
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """
+        코사인 유사도 계산
+        
+        Args:
+            vec1, vec2: 임베딩 벡터
+        
+        Returns:
+            float: 코사인 유사도 (0-1)
+        """
+        if len(vec1) != len(vec2):
+            return 0.0
+        
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = sum(a * a for a in vec1) ** 0.5
+        magnitude2 = sum(b * b for b in vec2) ** 0.5
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)

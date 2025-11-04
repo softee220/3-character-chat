@@ -21,7 +21,7 @@ services:
       - ./static:/app/static
       - ./config:/app/config
       # ChromaDB 데이터 영속성 보장
-      - chatbot-data:/app/static/data/chatbot
+      - chatbot-data:/app/static/data/chatbot/chardb_embedding
     restart: unless-stopped
     networks:
       - chatbot-network
