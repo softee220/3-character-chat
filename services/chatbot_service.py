@@ -290,6 +290,59 @@ class ChatbotService:
         return any(kw in message_lower for kw in no_ex_keywords)
     
     
+    def _is_short_answer(self, user_message: str) -> bool:
+        """
+        사용자 답변이 짧은지 감지합니다.
+        
+        Args:
+            user_message: 사용자 메시지
+            
+        Returns:
+            답변이 짧으면 True, 그렇지 않으면 False
+        """
+        # 공백 제거 후 길이 체크
+        message_trimmed = user_message.strip()
+        
+        # 20자 이하면 짧은 답변으로 간주
+        if len(message_trimmed) <= 15:
+            return True
+        
+        # 짧은 답변 키워드 체크
+        short_answer_keywords = [
+            '그래', '그렇지', '그렇네', '그렇구나', '그래요', '그렇다',
+            '몰라', '모르겠어', '모르겠다', '모르겠네',
+            '그냥', '그저', '그런데', '그럼',
+            '응', '어', '음', '으음', '아', '아하',
+            '맞아', '맞아요', '맞다', '맞네',
+            '있어', '없어', '있었어', '없었어',
+            '좋아', '좋아요', '싫어', '싫어요',
+            '알겠어', '알겠다', '알겠네'
+        ]
+        
+        message_lower = message_trimmed.lower()
+        
+        # 짧은 답변 키워드가 포함되어 있고, 전체 메시지가 짧으면
+        if any(kw in message_lower for kw in short_answer_keywords) and len(message_trimmed) <= 20:
+            return True
+        
+        return False
+    
+    
+    def _create_empathy_first_instruction(self, question: str, context: str = "") -> str:
+        """
+        공감 우선 구조 프롬프트를 생성하는 공통 메서드.
+        
+        Args:
+            question: 던질 질문
+            context: 추가 맥락 (선택사항)
+            
+        Returns:
+            공감 우선 구조 프롬프트 문자열
+        """
+        base = f"[공감 우선]: 공감(2-3문장) → 자연스러운 전환어 → 질문: {question}"
+        return f"{context}\n{base}" if context else base
+    
+    
     def _generate_bridge_question_prompt(self, current_state: str, next_state: str, transition_reason: str) -> str:
         """
         상태 전환 시 브릿지 질문 생성을 위한 프롬프트를 생성합니다.
@@ -304,41 +357,21 @@ class ChatbotService:
         """
         next_question = self._get_next_question(next_state)
         
-        # UNRESOLVED → ATTACHMENT 전환 시 특별한 프롬프트 사용
+        # 사용자의 마지막 답변 추출 (대화 기록에서)
+        last_user_message = ""
+        if len(self.dialogue_history) >= 2:
+            # 마지막 메시지가 봇이면, 그 전이 사용자 메시지
+            for item in reversed(self.dialogue_history[-4:]):
+                if item.get('role') != '혜슬' and item.get('role') != '이다음':
+                    last_user_message = item.get('content', '')[:100]  # 최근 100자만
+                    break
+        
+        # 공감 우선 구조 사용 (공통 메서드 활용)
+        context = f"[상태 전환] {current_state} → {next_state} ({transition_reason})\n사용자 마지막 답변: \"{last_user_message}\""
         if current_state == 'RECALL_UNRESOLVED' and next_state == 'RECALL_ATTACHMENT':
-            bridge_prompt = f"""
-[상태 전환 지시 - UNRESOLVED → ATTACHMENT]
-현재 상태: {current_state} → 다음 상태: {next_state}
-전환 이유: {transition_reason}
-
-이별의 맥락을 듣고 나서, 이제 처음 만났을 때나 좋았던 순간들을 떠올려보는 자연스러운 흐름으로 전환해야 해.
-
-**전환 전략:**
-
-1. 사용자가 말한 이별/미해결 감정에 대해 짧게 공감하거나 고개를 끄덕이는 듯한 반응
-
-2. "그래도", "그런데", "생각해보니" 같은 전환어를 사용해서 자연스럽게 긍정적인 기억으로 넘어가기
-
-3. 마치 대화가 자연스럽게 흘러가는 것처럼, 질문이 끼어드는 느낌이 들지 않게
-
-다음 질문: {next_question}
-
-친근한 친구 말투로, 마치 대화 흐름상 자연스럽게 떠올린 것처럼 물어보세요.
-"""
-        else:
-            # 다른 상태 전환은 기존 로직 사용
-            bridge_prompt = f"""
-[상태 전환 지시]
-현재 상태: {current_state} → 다음 상태: {next_state}
-전환 이유: {transition_reason}
-
-지금까지 사용자가 말한 내용을 1-2문장으로 자연스럽게 요약하고,
-다음 질문으로 자연스럽게 넘어가는 브릿지 멘트를 생성하세요.
-
-다음 질문: {next_question}
-
-친근한 친구 말투로, 자연스럽게 전환하되 사용자가 상태 전환을 눈치채지 못하게 하세요.
-"""
+            context += "\n이별 맥락 후 긍정적 기억으로 자연스럽게 전환."
+        
+        bridge_prompt = self._create_empathy_first_instruction(next_question, context)
         return bridge_prompt
     
     
@@ -398,22 +431,23 @@ class ChatbotService:
             recent_summary = "\n".join([f"{item['role']}: {item['content'][:50]}..." for item in recent_turns])
             prompt_parts.append(f"[최근 대화 요약 - 이미 물어본 질문은 절대 반복하지 마]:\n{recent_summary}\n")
         
-        # 상태별 꼬리 질문 지시
-        if self.dialogue_state == 'RECALL_ATTACHMENT':
-            prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자가 언급한 감정과 관련된 다른 순간이나 경험이 있었는지 자연스럽게 궁금해하며 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
-        elif self.dialogue_state == 'RECALL_REGRET':
-            prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자의 답변에서 궁금한 부분이나 자세히 듣고 싶은 부분을 자연스럽게 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
-        elif self.dialogue_state == 'RECALL_UNRESOLVED':
-            prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자 답변에서 아직 잘 모르겠는 부분이나 궁금한 장면에 대해 자연스럽게 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
-        elif self.dialogue_state == 'RECALL_COMPARISON':
-            prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
-        elif self.dialogue_state == 'RECALL_AVOIDANCE':
-            prompt_parts.append("[지능적 꼬리 질문 지시]:")
-            prompt_parts.append("- 사용자 답변을 듣고 그냥 궁금해서 자연스럽게 추가로 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
+        # 짧은 답변 감지 및 공감 우선 지시
+        is_short = self._is_short_answer(user_message)
+        is_uncertain_answer = any(keyword in user_message.lower() for keyword in ['몰라', '모르겠어', '모르겠다', '모르겠네', '기억 안 나', '기억이 안 나'])
+        
+        # 짧은 답변 또는 불확실한 답변에 대한 공감 우선 지시
+        if is_short or is_uncertain_answer:
+            if is_uncertain_answer:
+                prompt_parts.append("[공감 우선]: '몰라' 같은 답변은 힘들었거나 기억하고 싶지 않았을 수 있음. 먼저 진심으로 공감(2-3문장) 후 자연스럽게 대화 이어가거나 다른 각도로 접근. 질문 강제 금지.")
+            else:
+                prompt_parts.append("[공감 우선]: 짧은 답변은 더 말하기 어려웠을 수 있음. 먼저 공감(1-2문장) 후 자연스러운 전환어로 대화 이어가거나 부드럽게 질문.")
+        
+        # 상태별 꼬리 질문 지시 (조건부: 꼬리 질문 단계이고 사용자 답변이 짧을 때만)
+        is_tail_question_phase = self.tail_question_used.get(self.dialogue_state, False)
+        
+        if is_tail_question_phase and is_short and not is_uncertain_answer:
+            # 공통 지시사항 통합
+            prompt_parts.append("[꼬리 질문]: 위 공감 후 사용자 답변에서 아직 잘모르겠는 부분이나나 궁금한 부분을 자연스럽게 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
         
         
         # 특별 지시사항 추가 (브릿지, redirect 등)
@@ -540,23 +574,39 @@ class ChatbotService:
                         # 고정 질문 던지기
                         next_question = self._get_next_question(self.dialogue_state)
                         if next_question:
-                            special_instruction = f"\n[고정 질문]: 다음 질문을 자연스럽게 물어보세요: {next_question}"
+                            special_instruction = f"\n{self._create_empathy_first_instruction(next_question)}"
                             print(f"[QUESTION] {self.dialogue_state}: 고정 질문 #{current_q_idx} 던짐")
                             # 고정 질문을 던졌으므로 다음 턴에는 꼬리 질문 허용
                             self.tail_question_used[self.dialogue_state] = True
                     else:
-                        # 꼬리 질문 단계 - 이미 한 번 허용했으므로 이제 다음 고정 질문으로
-                        print(f"[QUESTION] {self.dialogue_state}: 꼬리 질문 완료, 다음 고정 질문으로 이동")
-                        self._mark_question_used(self.dialogue_state)
-                        self.tail_question_used[self.dialogue_state] = False
+                        # 꼬리 질문 단계 - 사용자 답변 길이에 따라 결정
+                        # tail_question_used가 True라는 것은 이미 한 번 꼬리 질문을 허용했다는 의미
+                        # 따라서 이번 턴에는 꼬리 질문을 한 번 던지고, 다음 턴에는 무조건 다음 고정 질문으로 가야 함
+                        is_short = self._is_short_answer(user_message)
                         
-                        # 즉시 다음 고정 질문 던지기
-                        if not self._is_questions_exhausted(self.dialogue_state):
-                            next_question = self._get_next_question(self.dialogue_state)
-                            if next_question:
-                                special_instruction = f"\n[다음 고정 질문]: 이전 답변에 짧게 공감하고, 다음 질문으로 자연스럽게 넘어가세요: {next_question}"
-                                print(f"[QUESTION] {self.dialogue_state}: 다음 고정 질문 #{self.question_indices.get(self.dialogue_state, 0)} 던짐")
-                                self.tail_question_used[self.dialogue_state] = True
+                        if is_short:
+                            # 짧은 답변: 이번 턴에 꼬리 질문 허용 (프롬프트에 꼬리 질문 지시가 추가됨)
+                            # 꼬리 질문을 한 번만 허용하므로, 꼬리 질문을 던지고 나면 다음 턴에는 무조건 다음 고정 질문으로 가야 함
+                            print(f"[QUESTION] {self.dialogue_state}: 사용자 답변이 짧음 - 꼬리 질문 허용 (이번 턴)")
+                            # 꼬리 질문을 한 번만 허용하므로, 꼬리 질문을 던지고 나면 즉시 다음 고정 질문으로 가야 함
+                            # 이를 위해 꼬리 질문을 던지고 나면 tail_question_used를 False로 설정하고 question_indices를 증가시킴
+                            # 하지만 이번 턴에는 꼬리 질문을 허용해야 하므로, 꼬리 질문을 던지고 나면 다음 턴에 처리됨
+                            # 따라서 여기서는 꼬리 질문을 허용한 후 다음 턴을 위해 상태를 업데이트
+                            self._mark_question_used(self.dialogue_state)
+                            self.tail_question_used[self.dialogue_state] = False
+                        else:
+                            # 긴 답변: 꼬리 질문 없이 바로 다음 고정 질문으로
+                            print(f"[QUESTION] {self.dialogue_state}: 사용자 답변이 충분함 - 다음 고정 질문으로 이동")
+                            self._mark_question_used(self.dialogue_state)
+                            self.tail_question_used[self.dialogue_state] = False
+                            
+                            # 즉시 다음 고정 질문 던지기
+                            if not self._is_questions_exhausted(self.dialogue_state):
+                                next_question = self._get_next_question(self.dialogue_state)
+                                if next_question:
+                                    special_instruction = f"\n{self._create_empathy_first_instruction(next_question)}"
+                                    print(f"[QUESTION] {self.dialogue_state}: 다음 고정 질문 #{self.question_indices.get(self.dialogue_state, 0)} 던짐")
+                                    self.tail_question_used[self.dialogue_state] = True
             
             # [5단계] 상태 전환 조건 체크 (우선순위: 턴 수 → 질문 소진 → 점수)
             bridge_prompt_added = False
@@ -643,12 +693,13 @@ class ChatbotService:
                         # 첫 번째 고정 질문을 명시적으로 던지도록 설정
                         first_question = self._get_next_question('RECALL_UNRESOLVED')
                         if first_question:
-                            special_instruction = f"\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 다음 질문을 자연스럽게 물어봐: {first_question}"
+                            context = "[INITIAL_SETUP] 동의해준 것에 감사 표현 후"
+                            special_instruction = f"\n{context}\n{self._create_empathy_first_instruction(first_question)}"
                             # 첫 번째 질문을 사용했으므로 인덱스 증가
                             self._mark_question_used('RECALL_UNRESOLVED')
                             self.tail_question_used['RECALL_UNRESOLVED'] = True
                         else:
-                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 물어봐"
+                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 자연스럽게 물어봐"
                 elif any(keyword in user_message for keyword in negative_keywords):
                     print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
                     if not special_instruction:
@@ -715,8 +766,8 @@ class ChatbotService:
             # [7단계] LLM API 호출
             if self.client:
                 print(f"[LLM] Calling API...")
-                config = ConfigLoader.load_config()
-                system_prompt_config = config.get('system_prompt', {})
+                #config = ConfigLoader.load_config() 중복호출 방지지
+                system_prompt_config = self.config.get('system_prompt', {})
                 base_prompt = system_prompt_config.get('base', '당신은 환승연애팀 막내 PD가 된 친구입니다.')
                 rules = system_prompt_config.get('rules', [])
                 
