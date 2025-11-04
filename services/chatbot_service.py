@@ -647,8 +647,8 @@ class ChatbotService:
                     if not special_instruction:
                         special_instruction = "\n[INITIAL_SETUP 설득]: 야! 난 네 친구잖아. PD가 된 친구를 도와준다고 생각해줘. 그래도 정말 안 되면 어쩔 수 없지만ㅠㅠ **다른 연애 이야기는 절대 안 돼!** 우리 기획은 오직 '전 애인 X와의 미련도'만 분석하는 거라서, 꼭 그 X 얘기만 들어야 해. 하나만이라도 괜찮아, 그냥 어떤 순간이었는지만 얘기해줘! 절대 다른 주제로 대화를 바꾸지 마."
             
-            # [X 스토리 부재 감지] - INITIAL_SETUP 이후 또는 초반 대화 중
-            if self._detect_no_ex_story(user_message) and self.dialogue_state != 'NO_EX_CLOSING':
+            # [X 스토리 부재 감지] - INITIAL_SETUP 단계에서만 감지
+            if self.dialogue_state == 'INITIAL_SETUP' and self._detect_no_ex_story(user_message):
                 print("[FLOW_CONTROL] X 스토리 부재 감지. 친구 위로 후 종료.")
                 
                 # 상태를 종료 상태로 전환
