@@ -641,7 +641,15 @@ class ChatbotService:
                     self.dialogue_state = 'RECALL_UNRESOLVED'
                     print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_UNRESOLVED")
                     if not special_instruction:
-                        special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 헤어진 이유를 묻는 질문을 시작해"
+                        # 첫 번째 고정 질문을 명시적으로 던지도록 설정
+                        first_question = self._get_next_question('RECALL_UNRESOLVED')
+                        if first_question:
+                            special_instruction = f"\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 다음 질문을 자연스럽게 물어봐: {first_question}"
+                            # 첫 번째 질문을 사용했으므로 인덱스 증가
+                            self._mark_question_used('RECALL_UNRESOLVED')
+                            self.tail_question_used['RECALL_UNRESOLVED'] = True
+                        else:
+                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 물어봐"
                 elif any(keyword in user_message for keyword in negative_keywords):
                     print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
                     if not special_instruction:
