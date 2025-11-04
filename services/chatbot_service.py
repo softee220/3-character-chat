@@ -88,12 +88,12 @@ class ChatbotService:
         
         # 8. 이미지 매핑 설정
         self.image_mapping = {
-            'empathy': 'images/chatbot/empathy.png',  # 공감
-            'unconditional_support': 'images/chatbot/support.png',  # 무조건적인 지지
-            'surprise': 'images/chatbot/surprise.png',  # 놀람
-            'firm_advice': 'images/chatbot/advice.png',  # 단호한 조언
-            'laughing': 'images/chatbot/laughing.png',  # 웃는 모습
-            'careful': 'images/chatbot/careful.png'  # 눈치보는 모습
+            'empathy': 'images/chatbot/01_empathy.png',  # 공감
+            'unconditional_support': 'images/chatbot/01_support.png',  # 무조건적인 지지
+            'surprise': 'images/chatbot/01_surprised.png',  # 놀람
+            'firm_advice': 'images/chatbot/01_advice.png',  # 단호한 조언
+            'laughing': 'images/chatbot/01_smile.png',  # 웃는 모습
+            'careful': 'images/chatbot/01_careful.png'  # 눈치보는 모습
         }
         
         print("[ChatbotService] 초기화 완료")
@@ -422,9 +422,9 @@ class ChatbotService:
                 self.tail_question_used = {state: False for state in self.fixed_questions.keys()}
                 self.final_regret_score = None  # 초기화 시점에 리셋
                 
-                reply = f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고고 그냥 나나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
-                self.dialogue_history.append({"role": "혜슬", "content": reply})
-                return {'reply': reply, 'image': "static/images/chatbot/main.png"}
+                reply = f"야, {username}! 나 요즘 일이 너무 재밌어ㅋㅋ 드디어 환승연애 막내 PD 됐거든!\n 근데 재밌는 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아?\n 내가 요즘 그거 관련해서 연애 사례 모으고 있는데, 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고 그냥 나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ \n너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
+                self.dialogue_history.append({"role": "이다음", "content": reply})
+                return {'reply': reply, 'image': "/static/images/chatbot/01_main.png"}
             
             # [2단계] 중단 요청 처리 (turn_count 증가 전)
             stop_keywords = [
@@ -739,11 +739,11 @@ class ChatbotService:
                         if self.final_regret_score <= 50:
                             # 미련도 50% 이하
                             selected_image = "/static/images/chatbot/regretX_program.png"
-                            closing_message = "와, 결과 보고 어떻게 생각했어? ㅋㅋㅋ 너는 이런 프로그램이 잘 어울리겠다!"
+                            closing_message = "야... 이제 넌 미련이 거의 없구나 잘됐다! 새로 프로그램 기획하고 있는데 차라리 여기 한번 면접 볼래?"
                         else:
                             # 미련도 50% 초과
                             selected_image = "/static/images/chatbot/regretO_program.png"
-                            closing_message = "와, 결과 보고 어떻게 생각했어? ㅋㅋㅋ 너는 이런 프로그램이 잘 어울리겠다!"
+                            closing_message = "아직 미련이 많이 남았네 ㅜㅜ 이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게!"
                         
                         print(f"[FLOW_CONTROL] 리포트 피드백 감지. 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
                         
