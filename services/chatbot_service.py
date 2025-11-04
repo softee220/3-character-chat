@@ -516,12 +516,14 @@ class ChatbotService:
             previous_state = self.dialogue_state
             
             # [4단계] 연애 감정 분석 수행 (NO_EX_CLOSING, REPORT_SHOWN, FINAL_CLOSING 상태에서는 생략)
+            # 속도 향상을 위해 RAG 없이 키워드 기반 분석만 수행 (RAG는 리포트 생성 시에만 사용)
             if self.dialogue_state in ['NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
                 analysis_results = {'total': 0, 'attachment': 0, 'regret': 0, 'unresolved': 0, 'comparison': 0, 'avoidance': 0}
                 print(f"[ANALYSIS] {self.dialogue_state} 상태: 감정 분석 생략")
             else:
-                analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
-                print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
+                # RAG 없이 키워드 기반 분석만 수행 (속도 향상)
+                analysis_results = self.emotion_analyzer.calculate_regret_index(user_message, use_rag=False)
+                print(f"[ANALYSIS] 미련도 (키워드 기반): {analysis_results['total']:.1f}%")
             
             # [4.5단계] 고정 질문 및 꼬리 질문 관리
             # 현재 상태가 고정 질문을 가진 상태이고, 특별 지시사항이 없으며, 주제 이탈이 아닐 때만
@@ -796,11 +798,16 @@ class ChatbotService:
                 # 리포트 생성을 위한 전체 대화 맥락 수집
                 full_context = self._collect_dialogue_context_for_report()
                 
+                # 리포트 생성 시점에 누적된 대화 기록을 바탕으로 RAG를 사용한 미련도 재계산
+                print("[ANALYSIS] 리포트 생성: 누적된 대화 기록을 바탕으로 RAG를 사용한 미련도 계산 시작")
+                final_analysis_results = self.emotion_analyzer.calculate_regret_index(full_context, use_rag=True)
+                print(f"[ANALYSIS] 최종 미련도 (RAG 기반): {final_analysis_results['total']:.1f}%")
+                
                 if self.dialogue_state == 'CLOSING':
-                    if analysis_results['total'] > 0:
-                        # 최종 미련도 점수 저장
-                        self.final_regret_score = analysis_results['total']
-                        report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
+                    if final_analysis_results['total'] > 0:
+                        # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
+                        self.final_regret_score = final_analysis_results['total']
+                        report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
                         reply += f"\n\n{report}"
                         
                         # 리포트 표시 후 "결과에 대해서 어떻게 생각해?" 질문 추가
@@ -815,10 +822,10 @@ class ChatbotService:
                     if is_report_request:
                         self.dialogue_state = 'CLOSING'
                         print("[FLOW_CONTROL] 리포트 요청 수락. CLOSING 상태로 전환.")
-                        if analysis_results['total'] > 0:
-                            # 최종 미련도 점수 저장
-                            self.final_regret_score = analysis_results['total']
-                            report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
+                        if final_analysis_results['total'] > 0:
+                            # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
+                            self.final_regret_score = final_analysis_results['total']
+                            report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
                             reply += f"\n\n{report}"
                             
                             # 리포트 표시 후 피드백 질문 추가
@@ -832,10 +839,10 @@ class ChatbotService:
                 elif is_report_request:
                     self.dialogue_state = 'CLOSING'
                     print("[FLOW_CONTROL] 사용자 리포트 요청. CLOSING 상태로 전환.")
-                    if analysis_results['total'] > 0:
-                        # 최종 미련도 점수 저장
-                        self.final_regret_score = analysis_results['total']
-                        report = self.report_generator.generate_emotion_report(analysis_results, username, full_context)
+                    if final_analysis_results['total'] > 0:
+                        # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
+                        self.final_regret_score = final_analysis_results['total']
+                        report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
                         reply += f"\n\n{report}"
                         
                         # 리포트 표시 후 피드백 질문 추가
