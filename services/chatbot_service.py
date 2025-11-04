@@ -51,7 +51,7 @@ class ChatbotService:
         self.turn_count = 0  # 대화 턴 수 추적
         self.stop_request_count = 0  # 사용자 대화 중단 요청 횟수
         self.state_turns = 0  # 현재 상태에서 진행된 턴 수
-        self.dialogue_states_flow = ['RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_UNRESOLVED', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
+        self.dialogue_states_flow = ['RECALL_UNRESOLVED', 'RECALL_ATTACHMENT', 'RECALL_REGRET', 'RECALL_COMPARISON', 'RECALL_AVOIDANCE', 'TRANSITION_NATURAL_REPORT', 'CLOSING']
         self.final_regret_score = None  # 리포트 생성 시점의 최종 미련도 점수 저장
         
         # 6. 고정 질문 시스템 초기화
@@ -305,7 +305,30 @@ class ChatbotService:
         """
         next_question = self._get_next_question(next_state)
         
-        bridge_prompt = f"""
+        # UNRESOLVED → ATTACHMENT 전환 시 특별한 프롬프트 사용
+        if current_state == 'RECALL_UNRESOLVED' and next_state == 'RECALL_ATTACHMENT':
+            bridge_prompt = f"""
+[상태 전환 지시 - UNRESOLVED → ATTACHMENT]
+현재 상태: {current_state} → 다음 상태: {next_state}
+전환 이유: {transition_reason}
+
+이별의 맥락을 듣고 나서, 이제 처음 만났을 때나 좋았던 순간들을 떠올려보는 자연스러운 흐름으로 전환해야 해.
+
+**전환 전략:**
+
+1. 사용자가 말한 이별/미해결 감정에 대해 짧게 공감하거나 고개를 끄덕이는 듯한 반응
+
+2. "그래도", "그런데", "생각해보니" 같은 전환어를 사용해서 자연스럽게 긍정적인 기억으로 넘어가기
+
+3. 마치 대화가 자연스럽게 흘러가는 것처럼, 질문이 끼어드는 느낌이 들지 않게
+
+다음 질문: {next_question}
+
+친근한 친구 말투로, 마치 대화 흐름상 자연스럽게 떠올린 것처럼 물어보세요.
+"""
+        else:
+            # 다른 상태 전환은 기존 로직 사용
+            bridge_prompt = f"""
 [상태 전환 지시]
 현재 상태: {current_state} → 다음 상태: {next_state}
 전환 이유: {transition_reason}
@@ -615,10 +638,10 @@ class ChatbotService:
                 negative_keywords = ['싫어', '안 해', '못 해', '그만', '바빠']
                 
                 if any(keyword in user_message for keyword in positive_keywords):
-                    self.dialogue_state = 'RECALL_ATTACHMENT'
-                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_ATTACHMENT")
+                    self.dialogue_state = 'RECALL_UNRESOLVED'
+                    print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_UNRESOLVED")
                     if not special_instruction:
-                        special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 첫만남을 묻는 질문을 시작해"
+                        special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 무조건 X와의 헤어진 이유를 묻는 질문을 시작해"
                 elif any(keyword in user_message for keyword in negative_keywords):
                     print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
                     if not special_instruction:
