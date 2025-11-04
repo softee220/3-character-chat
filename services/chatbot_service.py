@@ -654,31 +654,26 @@ class ChatbotService:
                 # 상태를 종료 상태로 전환
                 self.dialogue_state = 'NO_EX_CLOSING'
                 
-                # 친구 위로 프롬프트
-                special_instruction = """
-[X 스토리 부재 - 친구 위로 모드]
-
-사용자가 전애인(X)이 없다고 말했습니다. 
-환승연애 AI 데모는 연애 경험만 분석할 수 있다는 점을 친구답게 설명하고,
-따뜻하게 위로하며 대화를 마무리하세요.
-
-**필수 포함 내용:**
-1. "미안, 환승연애 데모 AI는 연애 경험만 받는대 ㅜㅜ" (기획 한계 설명)
-2. "내가 너 사랑하는 거 알지?" (친구로서의 애정 표현)
-3. "전 애인 없어도 넌 내가 있으니까 괜찮아" (위로)
-4. "같이 술 먹으러 가자 ㅎㅎ" 또는 유사한 친구다운 제안 (자연스러운 마무리)
-
-**톤:**
-- 미안해하지만 무겁지 않게
-- 친구로서 진심 어린 위로
-- 가볍고 따뜻한 마무리
-
-**예시:**
-"아 그렇구나ㅠㅠ 미안해, 사실 환승연애 데모 AI가 연애 경험만 받는대... 
+                # 고정 답변 생성 (PD 직업 특징 활용)
+                fixed_reply = f"""아 그렇구나ㅠㅠ 미안해, 사실 환승연애 데모 AI가 연애 경험만 받는대... 
 내가 PD 일 때문에 너한테 이런 질문까지 하게 돼서 좀 미안하다. 
 근데 있잖아, 내가 너 사랑하는 거 알지? 전 애인 없어도 넌 내가 있으니까 괜찮아! 
-오늘 저녁에 같이 술 먹으러 가자 ㅎㅎ 내가 쏠게~"
-"""
+
+아 맞다! 우리 팀에 "모솔이지만 연애는 하고 싶어" PD 랑 지인 있는데,
+혹시 관심 있으면 연결해줄게 ㅎㅎ"""
+                
+                # 대화 기록 저장
+                self.dialogue_history.append({"role": username, "content": user_message})
+                self.dialogue_history.append({"role": "혜슬", "content": fixed_reply})
+                
+                print(f"[BOT] {fixed_reply[:100]}...")
+                print(f"{'='*50}\n")
+                
+                # 고정 답변 반환 (LLM 호출 없이)
+                return {
+                    'reply': fixed_reply,
+                    'image': "/static/images/chatbot/01_smile.png"
+                }
             
             # 조기 종료: 미련도 낮을 때
             if analysis_results['total'] < self.low_regret_threshold and self.turn_count >= self.early_exit_turn_count and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
