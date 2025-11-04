@@ -449,37 +449,74 @@ class ChatbotService:
         """
         prompt_parts = []
         
-        # 최근 대화 요약 (반복 방지)
-        if len(self.dialogue_history) >= 6:
+        # 최근 대화 요약 (반복 방지) - 더 긴 범위로 확장
+        if len(self.dialogue_history) >= 10:
+            recent_turns = self.dialogue_history[-10:]
+            recent_summary = "\n".join([f"{item['role']}: {item['content'][:80]}..." for item in recent_turns])
+            prompt_parts.append(f"""[최근 대화 요약 - CRITICAL: 이미 물어본 질문은 절대 반복하지 마]
+{recent_summary}
+
+**중요: 위 대화 요약을 꼭 확인하고, 이미 물어본 질문이나 사용자가 이미 답변한 내용에 대해 다시 물어보지 마.**
+""")
+        elif len(self.dialogue_history) >= 6:
             recent_turns = self.dialogue_history[-6:]
-            recent_summary = "\n".join([f"{item['role']}: {item['content'][:50]}..." for item in recent_turns])
-            prompt_parts.append(f"[최근 대화 요약 - 이미 물어본 질문은 절대 반복하지 마]:\n{recent_summary}\n")
+            recent_summary = "\n".join([f"{item['role']}: {item['content'][:80]}..." for item in recent_turns])
+            prompt_parts.append(f"""[최근 대화 요약 - CRITICAL: 이미 물어본 질문은 절대 반복하지 마]
+{recent_summary}
+
+**중요: 위 대화 요약을 꼭 확인하고, 이미 물어본 질문이나 사용자가 이미 답변한 내용에 대해 다시 물어보지 마.**
+""")
         
         # 짧은 답변 감지
         is_short = self._is_short_answer(user_message)
         is_uncertain_answer = any(keyword in user_message.lower() for keyword in ['몰라', '모르겠어', '모르겠다', '모르겠네', '기억 안 나', '기억이 안 나'])
         
-        # 짧은 답변을 화제 전환 신호로 활용
-        if is_short and not is_uncertain_answer:
-            # 다음 상태와 오프너 가져오기
+        # 이미 답변했다는 신호 감지 ("아까 말했잖아", "이미 답했어" 등)
+        already_answered_keywords = ['아까', '이미', '말했', '답했', '했잖아', '했어', '알았잖아', '알았어', '말한', '했던']
+        is_already_answered = any(keyword in user_message.lower() for keyword in already_answered_keywords) and len(user_message) < 30
+        
+        # 짧은 답변 처리는 하이브리드 전략에서 자연스럽게 처리됨 (화제 전환 신호로 사용하지 않음)
+        
+        # 이미 답변했다는 신호 처리
+        if is_already_answered:
+            # 다음 참고 질문으로 넘어가거나 다음 주제로 전환
             next_state, next_opener = self.get_next_state_in_flow(self.dialogue_state)
-            if next_state and next_opener:
-                prompt_parts.append(f"""[대화 지침]
-사용자가 방금 "{user_message}" 처럼 짧게 답했어. 할 말이 없거나 그만 말하고 싶나 봐.
+            current_questions = self.fixed_questions.get(self.dialogue_state, [])
+            current_q_idx = self.question_indices.get(self.dialogue_state, 0)
+            remaining_questions = current_questions[current_q_idx:] if current_q_idx < len(current_questions) else []
+            
+            if remaining_questions and len(remaining_questions) > 0:
+                # 같은 주제의 다음 참고 질문으로 넘어가기 (인덱스 증가)
+                next_question_hint = remaining_questions[0]
+                # 질문 인덱스 증가 (같은 질문 반복 방지)
+                self._mark_question_used(self.dialogue_state)
+                prompt_parts.append(f"""[이미 답변함 감지]
+사용자가 "아까 말했잖아" 같은 답변을 했어. 이미 물어본 질문을 반복하지 말고, 아래 다른 각도 질문으로 넘어가거나 사용자의 답변에서 새로운 궁금한 점을 찾아봐.
 
-1. (먼저) 억지로 꼬리 질문하지 말고, "그렇구나" 같이 가볍게 공감해줘.
-2. (그리고) 바로 아래 '다음 주제 오프너'를 사용해서 자연스럽게 화제를 돌려.
+[다음 참고 질문 (방향성만 참고)]
+{next_question_hint}
+
+**중요: 위 질문을 그대로 말하지 말고, 같은 맥락에서 다른 각도로 자연스럽게 질문해.**
+""")
+            elif next_state and next_opener:
+                # 다음 주제로 전환
+                prompt_parts.append(f"""[이미 답변함 감지 - 화제 전환]
+사용자가 이미 답변했다고 했어. 현재 주제에 대해 충분히 정보를 얻었으니, 아래 '다음 주제 오프너'를 사용해서 자연스럽게 화제를 전환해.
 
 [다음 주제 오프너]
 "{next_opener}"
 """)
+            else:
+                prompt_parts.append("[이미 답변함 감지]: 사용자가 이미 답변했다고 했어. 같은 질문을 반복하지 말고, 사용자의 답변에서 새로운 궁금한 점이나 다른 각도를 찾아봐.")
         
         # 불확실한 답변 처리
         elif is_uncertain_answer:
             prompt_parts.append("[공감 우선]: '몰라' 같은 답변은 힘들었거나 기억하고 싶지 않았을 수 있음. 먼저 진심으로 공감(2-3문장) 후 자연스럽게 대화 이어가거나 다른 각도로 접근. 질문 강제 금지.")
         
-        # 하이브리드 전략: state_turns 기반 지시
-        elif self.dialogue_state in self.fixed_questions and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
+            # 하이브리드 전략: state_turns 기반 지시 (이미 답변함 감지 시 제외)
+        elif (not is_already_answered and 
+              self.dialogue_state in self.fixed_questions and 
+              self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']):
             next_state, next_opener = self.get_next_state_in_flow(self.dialogue_state)
             
             # 현재 상태의 목표와 참고 질문들 가져오기
@@ -497,11 +534,19 @@ class ChatbotService:
             }
             current_goal = state_goals.get(self.dialogue_state, '현재 주제')
             
-            if self.state_turns < 2:
+            # 특별 지시사항이 있으면 하이브리드 전략을 건너뛰고 special_instruction만 사용
+            if special_instruction:
+                # special_instruction이 있으면 여기서는 아무것도 추가하지 않음 (special_instruction이 나중에 추가됨)
+                pass
+            # 상태 전환 직후 첫 턴(state_turns == 0)일 때는 참고 질문 보여주지 않음
+            elif self.state_turns == 0:
+                # 첫 턴이면 기본 지시만 (하나의 질문만)
+                prompt_parts.append(f"[대화 지침]\n사용자의 마지막 답변에 공감하고, 현재 주제({current_goal})에 대해 자연스럽게 질문해. **오직 하나의 질문만** 해.")
+            elif self.state_turns < 2:
                 # 초반부: 꼬리 질문에만 집중하되, 상태 목표 명시
                 if remaining_questions:
                     prompt_parts.append(f"""[대화 지침]
-사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해.
+사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해. **오직 하나의 질문만** 해.
 
 [현재 상태 목표]
 지금은 '{current_goal}'에 대한 정보를 얻는 중이야. 아래 참고 질문들을 보면서, 같은 맥락에서 자연스러운 꼬리 질문을 해.
@@ -510,13 +555,13 @@ class ChatbotService:
 {chr(10).join([f"- {q}" for q in remaining_questions[:3]])}
 """)
                 else:
-                    prompt_parts.append(f"[대화 지침]\n사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해. 현재 주제({current_goal})에 대해 더 깊이 들어가.")
+                    prompt_parts.append(f"[대화 지침]\n사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해. **오직 하나의 질문만** 해. 현재 주제({current_goal})에 대해 더 깊이 들어가.")
             else:
                 # 중반부 이후: 선택권 부여
                 if next_state and next_opener:
                     if remaining_questions:
                         prompt_parts.append(f"""[대화 지침]
-너의 최우선 목표는 사용자의 마지막 말에 공감하고 '꼬리 질문'을 하는 거야.
+너의 최우선 목표는 사용자의 마지막 말에 공감하고 '꼬리 질문'을 하는 거야. **오직 하나의 질문만** 해.
 
 [현재 상태 목표]
 지금은 '{current_goal}'에 대한 정보를 얻는 중이야.
@@ -534,7 +579,7 @@ class ChatbotService:
 """)
                     else:
                         prompt_parts.append(f"""[대화 지침]
-너의 최우선 목표는 사용자의 마지막 말에 공감하고 '꼬리 질문'을 하는 거야.
+너의 최우선 목표는 사용자의 마지막 말에 공감하고 '꼬리 질문'을 하는 거야. **오직 하나의 질문만** 해.
 
 [화제 전환 옵션]
 하지만, 만약 꼬리 질문할 게 마땅치 않거나, 
@@ -545,11 +590,11 @@ class ChatbotService:
 "{next_opener}"
 """)
                 else:
-                    prompt_parts.append(f"[대화 지침]\n사용자의 마지막 말에 공감하고 '꼬리 질문'을 해. 현재 주제({current_goal})에 대해 더 깊이 들어가.")
+                    prompt_parts.append(f"[대화 지침]\n사용자의 마지막 말에 공감하고 '꼬리 질문'을 해. **오직 하나의 질문만** 해. 현재 주제({current_goal})에 대해 더 깊이 들어가.")
         
         # 기본 지시사항 (특별한 경우가 아닐 때)
         elif not special_instruction:
-            prompt_parts.append("[대화 지침]\n사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해.")
+            prompt_parts.append("[대화 지침]\n사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해. **오직 하나의 질문만** 해.")
         
         # 특별 지시사항 추가 (브릿지, redirect 등)
         if special_instruction:
@@ -759,23 +804,35 @@ class ChatbotService:
             
             # INITIAL_SETUP 로직
             if self.dialogue_state == 'INITIAL_SETUP':
-                positive_keywords = ['그래', '알았어', '좋아', '응', 'ok', '네']
+                positive_keywords = ['그래', '알았어', '좋아', '응', 'ok', '네', '알겠어', '알겠다']
                 negative_keywords = ['싫어', '안 해', '못 해', '그만', '바빠']
                 
                 if any(keyword in user_message for keyword in positive_keywords):
                     self.dialogue_state = 'RECALL_UNRESOLVED'
+                    self.state_turns = 0  # 상태 전환 시 리셋
                     print("[FLOW_CONTROL] INITIAL_SETUP: 긍정적 응답. → RECALL_UNRESOLVED")
                     if not special_instruction:
                         # 첫 번째 고정 질문을 명시적으로 던지도록 설정
                         first_question = self._get_next_question('RECALL_UNRESOLVED')
                         if first_question:
-                            context = "[INITIAL_SETUP] 동의해준 것에 감사 표현 후"
-                            special_instruction = f"\n{context}\n{self._create_empathy_first_instruction(first_question)}"
+                            # 하나의 질문만 명확하게 던지도록 수정
+                            special_instruction = f"""[CRITICAL: INITIAL_SETUP → RECALL_UNRESOLVED]
+이것은 상태 전환 직후 첫 질문이야. 시스템 프롬프트의 "공감 2-3문장" 규칙을 무시하고 아래를 따라줘:
+
+1. 감사 표현은 최대 1문장으로 간단히 (예: "고마워!" 또는 "그렇구나!")
+2. 아래 질문 **하나만** 자연스럽게 물어봐
+3. 절대 여러 질문을 하지 마
+4. 절대 다른 주제(예: 처음 만났을 때)로 화제를 바꾸지 마
+
+[질문]
+{first_question}
+
+**최종 확인: 응답은 "감사 표현(1문장) + 질문(1개)" 형식이어야 해. 다른 것은 절대 추가하지 마.**
+"""
                             # 첫 번째 질문을 사용했으므로 인덱스 증가
                             self._mark_question_used('RECALL_UNRESOLVED')
-                            self.tail_question_used['RECALL_UNRESOLVED'] = True
                         else:
-                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 자연스럽게 물어봐"
+                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 자연스럽게 물어봐. **오직 하나의 질문만** 해."
                 elif any(keyword in user_message for keyword in negative_keywords):
                     print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
                     if not special_instruction:
