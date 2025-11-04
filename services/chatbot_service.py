@@ -137,42 +137,41 @@ class ChatbotService:
         reply_lower = reply.lower()
         
         # 키워드 기반 이미지 선택 로직
-        # 우선순위: 놀람 > 단호한 조언 > 웃는 모습 > 공감 > 무조건적인 지지 > 눈치보는 모습
+        # 우선순위: 단호한 조언 > 지지 > 눈치 > 공감 > 놀람 > 웃는 모습
         
         selected_image = None
         
-        # 1. 놀람 - "와", "헐", "진짜", "대박", "와우" 등의 감탄사
-        surprise_keywords = ['와', '헐', '진짜', '대박', '와우', '오', '놀랐', '신기', '오마이갓', 'ㄹㅇ', '와 진짜']
-        if any(keyword in reply_lower for keyword in surprise_keywords):
-            selected_image = self.image_mapping['surprise']
-        
-        # 2. 단호한 조언 - "해야 해", "해야겠어", "필요해", "중요해", "무조건", "절대"
-        elif any(keyword in reply_lower for keyword in ['해야 해', '해야겠어', '필요해', '중요해', '무조건', '절대', '반드시', 
-                               '제발', '꼭', '해봐', '하세요', '하자', '조언', '추천', '해야 할', '해야 돼']):
+        # 1. 단호한 조언 (최우선) - 가장 명확한 감정 표현
+        if any(keyword in reply_lower for keyword in ['해야 해', '해야겠어', '해야 할', '해야 돼', '필요해', '중요해', '무조건', '절대', '반드시', 
+                               '제발', '꼭', '해봐', '하세요', '하자', '조언', '추천', '해줘', '해봐봐']):
             selected_image = self.image_mapping['firm_advice']
         
-        # 3. 웃는 모습 - "ㅋㅋ", "하하", "웃", "재밌", "흐흐", 이모지 (😀😆😂)
-        elif any(keyword in reply for keyword in ['ㅋ', '하하', '웃', '재밌', '흐흐', 'ㅎㅎ', '크크', '유쾌']) or \
-             any(emoji in reply for emoji in ['😀', '😆', '😂', '🤣', '😊', '😄']):
-            selected_image = self.image_mapping['laughing']
-        
-        # 4. 공감 - "알겠어", "이해해", "같아", "맞아", "그렇구나", "공감"
-        elif any(keyword in reply_lower for keyword in ['알겠어', '이해해', '같아', '맞아', '그렇구나', '공감', '느껴', '알 것 같아', 
-                          '이해', '알겠다', '그런가', '그런 것 같아', '동감', '맞다고', '그래']):
-            selected_image = self.image_mapping['empathy']
-        
-        # 5. 무조건적인 지지 - "응원", "힘내", "화이팅", "넌 할 수 있어", "믿어", "좋아"
-        elif any(keyword in reply_lower for keyword in ['응원', '힘내', '화이팅', '넌 할 수 있어', '믿어', '좋아', '멋져', '잘했어', 
-                          '고생했어', '수고했어', '훌륭해', '대단해', '괜찮아', '다 괜찮아질 거야']):
+        # 2. 무조건적인 지지 - 응원과 격려 표현
+        elif any(keyword in reply_lower for keyword in ['응원', '힘내', '화이팅', '넌 할 수 있어', '믿어', '멋져', '잘했어', 
+                          '고생했어', '수고했어', '훌륭해', '대단해', '다 괜찮아질 거야', '좋아', '좋네', '좋다']):
             selected_image = self.image_mapping['unconditional_support']
         
-        # 6. 눈치보는 모습 - "혹시", "괜찮아?", "불편하면", "부담 갖지 마", "아니면", "안 되면"
+        # 3. 눈치보는 모습 - 조심스러운 표현
         elif any(keyword in reply_lower for keyword in ['혹시', '괜찮아?', '불편하면', '부담', '아니면', '안 되면', '싫으면', 
-                          '원치 않으면', '괜찮으면', '괜찮다면']):
+                          '원치 않으면', '괜찮으면', '괜찮다면', '괜찮아?', '괜찮아']):
             selected_image = self.image_mapping['careful']
         
+        # 4. 공감 - 공감과 이해 표현 (키워드 확장)
+        elif any(keyword in reply_lower for keyword in ['알겠어', '이해해', '같아', '맞아', '그렇구나', '공감', '느껴', '알 것 같아', 
+                          '이해', '알겠다', '그런가', '그런 것 같아', '동감', '맞다고', '그래', '그렇지', '그렇군', '그렇구나',
+                          '아하', '아 그렇구나', '아 그렇군', '그런 거', '그런 거네', '그런 것 같아', '느낌', '느껴져']):
+            selected_image = self.image_mapping['empathy']
+        
+        # 5. 놀람 - 명확한 놀람 표현
+        elif any(keyword in reply_lower for keyword in ['와', '헐', '대박', '와우', '오마이갓', '놀랐어', '놀랐다', '놀라', '신기해', '신기하다']):
+            selected_image = self.image_mapping['surprise']
+        
+        # 6. 웃는 모습 (가장 마지막 우선순위)
+        elif any(keyword in reply_lower for keyword in ['ㅋㅋㅋ','ㅎㅎㅎ', '웃겨', '웃기', '재밌어', '재밌네', '재밌다', '웃었어', '웃었네', '웃었지', '웃음', '웃고', '유쾌']):
+            selected_image = self.image_mapping['laughing']
+        
         # 기본값: 공감 (가장 일반적인 반응)
-        else:
+        if selected_image is None:
             selected_image = self.image_mapping['empathy']
         
         # Flask static 경로로 변환
@@ -422,7 +421,7 @@ class ChatbotService:
                 self.tail_question_used = {state: False for state in self.fixed_questions.keys()}
                 self.final_regret_score = None  # 초기화 시점에 리셋
                 
-                reply = f"야, {username}! 나 요즘 일이 너무 재밌어ㅋㅋ 드디어 환승연애 막내 PD 됐거든!\n근데 재밌는 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아?\n 내가 요즘 그거 관련해서 연애 사례 모으고 있는데, 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고 그냥 나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ \n너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
+                reply = f"야, {username}! 나 요즘 일이 너무 재밌어ㅋㅋ 드디어 환승연애 막내 PD 됐거든!\n근데 재밌는 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아?\n내가 요즘 그거 관련해서 연애 사례 모으고 있는데, 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 재미삼아 봐봐. 부담 갖지말고 그냥 나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ \n너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
                 self.dialogue_history.append({"role": "이다음", "content": reply})
                 return {'reply': reply, 'image': "/static/images/chatbot/01_main.png"}
             
