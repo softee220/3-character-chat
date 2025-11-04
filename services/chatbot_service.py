@@ -143,7 +143,7 @@ class ChatbotService:
         
         # 1. 단호한 조언 (최우선) - 가장 명확한 감정 표현
         if any(keyword in reply_lower for keyword in ['해야 해', '해야겠어', '해야 할', '해야 돼', '필요해', '중요해', '무조건', '절대', '반드시', 
-                               '제발', '꼭', '해봐', '하세요', '하자', '조언', '추천', '해줘', '해봐봐']):
+                               '제발', '꼭', '해봐', '하세요', '하자', '조언', '추천', '해봐봐']):
             selected_image = self.image_mapping['firm_advice']
         
         # 2. 무조건적인 지지 - 응원과 격려 표현
