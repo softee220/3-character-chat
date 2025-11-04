@@ -231,6 +231,30 @@ class ChatbotService:
         print(f"[QUESTION] {state} 상태: 질문 인덱스 → {self.question_indices[state]}")
     
     
+    def get_next_state_in_flow(self, current_state: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        현재 상태의 다음 상태와 그 상태의 첫 번째 고정 질문(오프너)을 반환합니다.
+        
+        Args:
+            current_state: 현재 DSM 상태
+            
+        Returns:
+            (다음 상태, 다음 상태의 첫 번째 고정 질문) 튜플. 없으면 (None, None)
+        """
+        try:
+            current_idx = self.dialogue_states_flow.index(current_state)
+            if current_idx + 1 < len(self.dialogue_states_flow):
+                next_state = self.dialogue_states_flow[current_idx + 1]
+                # 다음 상태의 첫 번째 고정 질문을 오프너로 가져옴
+                if next_state in self.fixed_questions and len(self.fixed_questions[next_state]) > 0:
+                    next_opener = self.fixed_questions[next_state][0]
+                    return (next_state, next_opener)
+                return (next_state, None)
+        except ValueError:
+            pass
+        return (None, None)
+    
+    
     def _detect_topic_deviation(self, user_message: str) -> Optional[str]:
         """
         사용자 메시지에서 주제 이탈을 감지합니다.
@@ -431,24 +455,101 @@ class ChatbotService:
             recent_summary = "\n".join([f"{item['role']}: {item['content'][:50]}..." for item in recent_turns])
             prompt_parts.append(f"[최근 대화 요약 - 이미 물어본 질문은 절대 반복하지 마]:\n{recent_summary}\n")
         
-        # 짧은 답변 감지 및 공감 우선 지시
+        # 짧은 답변 감지
         is_short = self._is_short_answer(user_message)
         is_uncertain_answer = any(keyword in user_message.lower() for keyword in ['몰라', '모르겠어', '모르겠다', '모르겠네', '기억 안 나', '기억이 안 나'])
         
-        # 짧은 답변 또는 불확실한 답변에 대한 공감 우선 지시
-        if is_short or is_uncertain_answer:
-            if is_uncertain_answer:
-                prompt_parts.append("[공감 우선]: '몰라' 같은 답변은 힘들었거나 기억하고 싶지 않았을 수 있음. 먼저 진심으로 공감(2-3문장) 후 자연스럽게 대화 이어가거나 다른 각도로 접근. 질문 강제 금지.")
+        # 짧은 답변을 화제 전환 신호로 활용
+        if is_short and not is_uncertain_answer:
+            # 다음 상태와 오프너 가져오기
+            next_state, next_opener = self.get_next_state_in_flow(self.dialogue_state)
+            if next_state and next_opener:
+                prompt_parts.append(f"""[대화 지침]
+사용자가 방금 "{user_message}" 처럼 짧게 답했어. 할 말이 없거나 그만 말하고 싶나 봐.
+
+1. (먼저) 억지로 꼬리 질문하지 말고, "그렇구나" 같이 가볍게 공감해줘.
+2. (그리고) 바로 아래 '다음 주제 오프너'를 사용해서 자연스럽게 화제를 돌려.
+
+[다음 주제 오프너]
+"{next_opener}"
+""")
+        
+        # 불확실한 답변 처리
+        elif is_uncertain_answer:
+            prompt_parts.append("[공감 우선]: '몰라' 같은 답변은 힘들었거나 기억하고 싶지 않았을 수 있음. 먼저 진심으로 공감(2-3문장) 후 자연스럽게 대화 이어가거나 다른 각도로 접근. 질문 강제 금지.")
+        
+        # 하이브리드 전략: state_turns 기반 지시
+        elif self.dialogue_state in self.fixed_questions and self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
+            next_state, next_opener = self.get_next_state_in_flow(self.dialogue_state)
+            
+            # 현재 상태의 목표와 참고 질문들 가져오기
+            current_questions = self.fixed_questions.get(self.dialogue_state, [])
+            current_q_idx = self.question_indices.get(self.dialogue_state, 0)
+            remaining_questions = current_questions[current_q_idx:] if current_q_idx < len(current_questions) else []
+            
+            # 상태별 목표 설명
+            state_goals = {
+                'RECALL_UNRESOLVED': '헤어진 이유와 미해결된 감정(unresolved)',
+                'RECALL_ATTACHMENT': 'X에 대한 애착과 연상(attachment)',
+                'RECALL_REGRET': '후회와 아쉬움(regret)',
+                'RECALL_COMPARISON': 'X와의 비교와 대조(comparison)',
+                'RECALL_AVOIDANCE': '회피와 거리두기(avoidance)'
+            }
+            current_goal = state_goals.get(self.dialogue_state, '현재 주제')
+            
+            if self.state_turns < 2:
+                # 초반부: 꼬리 질문에만 집중하되, 상태 목표 명시
+                if remaining_questions:
+                    prompt_parts.append(f"""[대화 지침]
+사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해.
+
+[현재 상태 목표]
+지금은 '{current_goal}'에 대한 정보를 얻는 중이야. 아래 참고 질문들을 보면서, 같은 맥락에서 자연스러운 꼬리 질문을 해.
+
+[참고 질문들 - 방향성만 참고하고 절대 그대로 말하지 마]
+{chr(10).join([f"- {q}" for q in remaining_questions[:3]])}
+""")
+                else:
+                    prompt_parts.append(f"[대화 지침]\n사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해. 현재 주제({current_goal})에 대해 더 깊이 들어가.")
             else:
-                prompt_parts.append("[공감 우선]: 짧은 답변은 더 말하기 어려웠을 수 있음. 먼저 공감(1-2문장) 후 자연스러운 전환어로 대화 이어가거나 부드럽게 질문.")
+                # 중반부 이후: 선택권 부여
+                if next_state and next_opener:
+                    if remaining_questions:
+                        prompt_parts.append(f"""[대화 지침]
+너의 최우선 목표는 사용자의 마지막 말에 공감하고 '꼬리 질문'을 하는 거야.
+
+[현재 상태 목표]
+지금은 '{current_goal}'에 대한 정보를 얻는 중이야.
+
+[참고 질문들 - 방향성만 참고하고 절대 그대로 말하지 마]
+{chr(10).join([f"- {q}" for q in remaining_questions[:2]])}
+
+[화제 전환 옵션]
+하지만, 만약 꼬리 질문할 게 마땅치 않거나, 
+현재 주제({current_goal})에 대해 얘기가 충분히 된 것 같다고 판단되면,
+아래 '다음 주제 오프너'를 사용해서 자연스럽게 대화를 다음 단계로 넘어가.
+
+[다음 주제 오프너]
+"{next_opener}"
+""")
+                    else:
+                        prompt_parts.append(f"""[대화 지침]
+너의 최우선 목표는 사용자의 마지막 말에 공감하고 '꼬리 질문'을 하는 거야.
+
+[화제 전환 옵션]
+하지만, 만약 꼬리 질문할 게 마땅치 않거나, 
+현재 주제({current_goal})에 대해 얘기가 충분히 된 것 같다고 판단되면,
+아래 '다음 주제 오프너'를 사용해서 자연스럽게 대화를 다음 단계로 넘어가.
+
+[다음 주제 오프너]
+"{next_opener}"
+""")
+                else:
+                    prompt_parts.append(f"[대화 지침]\n사용자의 마지막 말에 공감하고 '꼬리 질문'을 해. 현재 주제({current_goal})에 대해 더 깊이 들어가.")
         
-        # 상태별 꼬리 질문 지시 (조건부: 꼬리 질문 단계이고 사용자 답변이 짧을 때만)
-        is_tail_question_phase = self.tail_question_used.get(self.dialogue_state, False)
-        
-        if is_tail_question_phase and is_short and not is_uncertain_answer:
-            # 공통 지시사항 통합
-            prompt_parts.append("[꼬리 질문]: 위 공감 후 사용자 답변에서 아직 잘모르겠는 부분이나나 궁금한 부분을 자연스럽게 물어봐. 이미 물어본 질문은 절대 반복하지 마.")
-        
+        # 기본 지시사항 (특별한 경우가 아닐 때)
+        elif not special_instruction:
+            prompt_parts.append("[대화 지침]\n사용자의 마지막 답변에 공감하고, 그 답변 내용 중에서 더 궁금한 점이나 깊게 파고들 부분을 자연스럽게 질문해.")
         
         # 특별 지시사항 추가 (브릿지, redirect 등)
         if special_instruction:
@@ -516,35 +617,40 @@ class ChatbotService:
             # 일반 메시지의 경우 turn_count 증가
             self.turn_count += 1
             
-            # [3단계] 주제 이탈 감지 및 redirect
+            # [3단계] 주제 이탈 감지 및 A&P 방식 처리
             deviation_type = None
             if not special_instruction:  # 중단 요청 처리 중이 아닐 때만
                 deviation_type = self._detect_topic_deviation(user_message)
                 if deviation_type == "current_future_relationship":
-                    special_instruction = "\n[주제 이탈 Redirect]: 어! 잠깐만ㅋㅋ 현애인 이야기나 미래 이야기는 우리 AI 분석 범위 밖이라서... (아직 데모라 데이터가 X에 대한 것만 모으고 있대!) 미안한데, 오직 네 X와의 연애 이야기에만 집중해서 계속 이야기해줄 수 있을까? 그 X는 어땠는지 좀 더 듣고 싶어!"
+                    # A&P 방식: 인정하고 화제 돌리기
+                    special_instruction = f"""[주제 이탈 감지!]
+사용자가 현애인/미래 연애 이야기를 하고 있어.
+
+[지시]
+친구로서 그 말에 가볍게 공감하거나 받아쳐줘. (예: "헐, 그런 일이 있었어? 대박")
+그다음, 바로 이어서 자연스럽게 다시 X 이야기로 화제를 돌려봐. (예: "아 맞다, 그래서 아까 하던 얘기 마저해봐. 그 X랑...")
+절대 "AI 분석 범위 밖" 같은 로봇 같은 말을 하지 마. 친구처럼 자연스럽게 처리해."""
                 elif deviation_type == "personal_topic":
-                    # 최근 대화에서 X 관련 키워드 추출 시도
-                    recent_keyword = "X와의 사건"  # 기본값
-                    if len(self.dialogue_history) >= 2:
-                        last_user_msg = self.dialogue_history[-2].get('content', '')
-                        # 간단한 키워드 추출 (실제로는 더 정교한 로직 필요)
-                        if '만난' in last_user_msg:
-                            recent_keyword = "첫만남"
-                        elif '헤어' in last_user_msg:
-                            recent_keyword = "헤어진 계기"
-                    
-                    special_instruction = f"\n[주제 이탈 Redirect]: 야, {username}아! 네 일상 얘기도 좋긴 한데ㅋㅋ 나 지금 이거 기획안에 쓸 데이터 모으는 중이잖아. 혹시 아까 네가 얘기했던 **[{recent_keyword}]**에 대해 좀 더 자세히 말해줄 수 있어? 그래야 AI가 정확하게 분석할 수 있대!"
+                    # A&P 방식: 인정하고 화제 돌리기
+                    special_instruction = f"""[주제 이탈 감지!]
+사용자가 개인적인 일상(회사, 학교 등)에 대해 말하고 있어.
+
+[지시]
+친구로서 그 말에 가볍게 공감하거나 받아쳐줘. (예: "헐, 회사에서 그런 일이 있었어? 대박")
+그다음, 바로 이어서 자연스럽게 다시 X 이야기로 화제를 돌려봐. (예: "아 맞다, 그래서 아까 하던 얘기 마저해봐. 그 X랑...")
+절대 "기획안에 쓸 데이터" 같은 로봇 같은 말을 하지 마. 친구처럼 자연스럽게 처리해."""
                 else:
                     # 일반적인 주제 이탈 (날씨, 음식 등) - 짧은 메시지만 체크
                     off_topic_keywords = ['날씨', '음식', '먹', '오늘', '내일', '어제', '시간', '뭐해', '어디']
                     if any(kw in user_message for kw in off_topic_keywords) and len(user_message) < 20:
-                        # 마지막 질문 다시 상기
-                        if len(self.dialogue_history) >= 2:
-                            last_bot_msg = self.dialogue_history[-1].get('content', '')
-                            # 마지막 질문 추출 시도
-                            if '?' in last_bot_msg:
-                                last_question = last_bot_msg.split('?')[0].split('!')[-1].strip() + '?'
-                                special_instruction = f"\n[주제 이탈 Redirect]: 아 그건 나중에 얘기하고ㅋㅋ 아까 물어봤던 거 있잖아! {last_question}"
+                        # A&P 방식으로 처리
+                        special_instruction = """[주제 이탈 감지!]
+사용자가 일상적인 주제(날씨, 음식 등)에 대해 말하고 있어.
+
+[지시]
+친구로서 그 말에 가볍게 받아쳐줘. (예: "아 그렇구나ㅋㅋ")
+그다음, 바로 이어서 자연스럽게 다시 X 이야기로 화제를 돌려봐. (예: "아 맞다, 그래서 아까 하던 얘기 마저해봐. 그 X랑...")
+친구처럼 자연스럽게 처리해."""
             
             # [턴 트래킹] 상태 전환 감지 및 state_turns 관리
             previous_state = self.dialogue_state
@@ -557,62 +663,30 @@ class ChatbotService:
                 analysis_results = self.emotion_analyzer.calculate_regret_index(user_message)
                 print(f"[ANALYSIS] 미련도: {analysis_results['total']:.1f}%")
             
-            # [4.5단계] 고정 질문 및 꼬리 질문 관리
+            # [4.5단계] 고정 질문 오프너 관리 (각 상태의 첫 번째 질문만 오프너로 사용)
             # 현재 상태가 고정 질문을 가진 상태이고, 특별 지시사항이 없으며, 주제 이탈이 아닐 때만
             if (self.dialogue_state in self.fixed_questions and 
                 not special_instruction and 
                 not deviation_type and
                 self.dialogue_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']):
                 
-                # 고정 질문이 아직 남아있는지 확인
-                if not self._is_questions_exhausted(self.dialogue_state):
-                    current_q_idx = self.question_indices.get(self.dialogue_state, 0)
-                    tail_used = self.tail_question_used.get(self.dialogue_state, False)
-                    
-                    # 현재 질문 인덱스가 가리키는 질문을 아직 던지지 않았다면 (꼬리 질문 단계가 아니라면)
-                    if not tail_used:
-                        # 고정 질문 던지기
-                        next_question = self._get_next_question(self.dialogue_state)
-                        if next_question:
-                            special_instruction = f"\n{self._create_empathy_first_instruction(next_question)}"
-                            print(f"[QUESTION] {self.dialogue_state}: 고정 질문 #{current_q_idx} 던짐")
-                            # 고정 질문을 던졌으므로 다음 턴에는 꼬리 질문 허용
-                            self.tail_question_used[self.dialogue_state] = True
-                    else:
-                        # 꼬리 질문 단계 - 사용자 답변 길이에 따라 결정
-                        # tail_question_used가 True라는 것은 이미 한 번 꼬리 질문을 허용했다는 의미
-                        # 따라서 이번 턴에는 꼬리 질문을 한 번 던지고, 다음 턴에는 무조건 다음 고정 질문으로 가야 함
-                        is_short = self._is_short_answer(user_message)
-                        
-                        if is_short:
-                            # 짧은 답변: 이번 턴에 꼬리 질문 허용 (프롬프트에 꼬리 질문 지시가 추가됨)
-                            # 꼬리 질문을 한 번만 허용하므로, 꼬리 질문을 던지고 나면 다음 턴에는 무조건 다음 고정 질문으로 가야 함
-                            print(f"[QUESTION] {self.dialogue_state}: 사용자 답변이 짧음 - 꼬리 질문 허용 (이번 턴)")
-                            # 꼬리 질문을 한 번만 허용하므로, 꼬리 질문을 던지고 나면 즉시 다음 고정 질문으로 가야 함
-                            # 이를 위해 꼬리 질문을 던지고 나면 tail_question_used를 False로 설정하고 question_indices를 증가시킴
-                            # 하지만 이번 턴에는 꼬리 질문을 허용해야 하므로, 꼬리 질문을 던지고 나면 다음 턴에 처리됨
-                            # 따라서 여기서는 꼬리 질문을 허용한 후 다음 턴을 위해 상태를 업데이트
-                            self._mark_question_used(self.dialogue_state)
-                            self.tail_question_used[self.dialogue_state] = False
-                        else:
-                            # 긴 답변: 꼬리 질문 없이 바로 다음 고정 질문으로
-                            print(f"[QUESTION] {self.dialogue_state}: 사용자 답변이 충분함 - 다음 고정 질문으로 이동")
-                            self._mark_question_used(self.dialogue_state)
-                            self.tail_question_used[self.dialogue_state] = False
-                            
-                            # 즉시 다음 고정 질문 던지기
-                            if not self._is_questions_exhausted(self.dialogue_state):
-                                next_question = self._get_next_question(self.dialogue_state)
-                                if next_question:
-                                    special_instruction = f"\n{self._create_empathy_first_instruction(next_question)}"
-                                    print(f"[QUESTION] {self.dialogue_state}: 다음 고정 질문 #{self.question_indices.get(self.dialogue_state, 0)} 던짐")
-                                    self.tail_question_used[self.dialogue_state] = True
+                # 각 상태의 첫 번째 질문만 오프너로 사용 (question_indices가 0일 때만)
+                current_q_idx = self.question_indices.get(self.dialogue_state, 0)
+                if current_q_idx == 0:
+                    # 첫 번째 고정 질문(오프너) 던지기
+                    opener_question = self._get_next_question(self.dialogue_state)
+                    if opener_question:
+                        special_instruction = f"\n{self._create_empathy_first_instruction(opener_question)}"
+                        print(f"[QUESTION] {self.dialogue_state}: 오프너 질문 던짐")
+                        # 오프너를 던졌으므로 인덱스 증가 (이후는 LLM이 자동으로 꼬리 질문 생성)
+                        self._mark_question_used(self.dialogue_state)
+                # 이후에는 _build_prompt에서 LLM이 자동으로 꼬리 질문을 생성하도록 지시됨
             
-            # [5단계] 상태 전환 조건 체크 (우선순위: 턴 수 → 질문 소진 → 점수)
+            # [5단계] 상태 전환 조건 체크 (LLM 판단 우선, 안전장치만 유지)
             bridge_prompt_added = False
             
             if previous_state != 'INITIAL_SETUP' and previous_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
-                # 조건 1: 턴 수 초과
+                # 안전장치: max_state_turns >= 10일 때만 강제 전환 (LLM이 화제 전환을 판단하지 못한 경우)
                 if self.state_turns >= self.max_state_turns:
                     # 다음 상태로 전환
                     try:
@@ -620,18 +694,18 @@ class ChatbotService:
                         if current_idx + 1 < len(self.dialogue_states_flow):
                             next_state = self.dialogue_states_flow[current_idx + 1]
                             self.dialogue_state = next_state
-                            print(f"[FLOW_CONTROL] {previous_state} 상태 턴 수 초과. → {next_state}로 전환")
+                            print(f"[FLOW_CONTROL] {previous_state} 상태 안전장치 작동 (턴 수 >= {self.max_state_turns}). → {next_state}로 전환")
                             
                             # 브릿지 프롬프트 생성
                             if not special_instruction:
                                 special_instruction = self._generate_bridge_question_prompt(
-                                    previous_state, next_state, "턴 수 초과"
+                                    previous_state, next_state, "안전장치(턴 수 초과)"
                                 )
                             bridge_prompt_added = True
                     except ValueError:
                         pass
                 
-                # 조건 2: 고정 질문 소진
+                # 조건 2: 고정 질문 소진 (오프너만 사용하므로 이제는 거의 발생하지 않음)
                 elif self._is_questions_exhausted(previous_state):
                     try:
                         current_idx = self.dialogue_states_flow.index(previous_state)
@@ -648,7 +722,7 @@ class ChatbotService:
                     except ValueError:
                         pass
                 
-                # 조건 3: 점수 임계값 도달 (상태별로)
+                # 조건 3: 점수 임계값 도달 (상태별로) - 참고용으로만 유지
                 elif not bridge_prompt_added:
                     threshold_map = {
                         'RECALL_ATTACHMENT': analysis_results['attachment'],
