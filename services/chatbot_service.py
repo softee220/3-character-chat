@@ -422,9 +422,9 @@ class ChatbotService:
                 self.tail_question_used = {state: False for state in self.fixed_questions.keys()}
                 self.final_regret_score = None  # 초기화 시점에 리셋
                 
-                reply = f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지마마 그냥 친구한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
+                reply = f"야, {username}! 요즘 나 일 재밌어 죽겠어ㅋㅋ 나 드디어 환승연애 막내 PD 됐다니까! 근데 웃긴 게, 요즘 거기서 AI 도입 얘기가 진짜 많아. 다음 시즌엔 무려 'X와의 미련도 측정 AI' 같은 것도 넣는대ㅋㅋㅋ 완전 신박하지 않아? 내가 요즘 그거 관련해서 연애 사례 모으고 있거든. 가만 생각해보니까… 너 얘기가 딱이야. 아직 테스트 버전이라 진짜 재미삼아 보는 거야. 부담 갖지말고고 그냥 나나한테 옛날 얘기하듯이 편하게 말해줘 ㅋㅋ 너 예전에 그 X 있잖아. 혹시 X랑 있었던 일 얘기해줄 수 있어?"
                 self.dialogue_history.append({"role": "혜슬", "content": reply})
-                return {'reply': reply, 'image': None}
+                return {'reply': reply, 'image': "static/images/chatbot/main.png"}
             
             # [2단계] 중단 요청 처리 (turn_count 증가 전)
             stop_keywords = [
