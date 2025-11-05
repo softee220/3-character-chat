@@ -129,6 +129,61 @@ class ChatbotService:
         # 리포트 피드백 키워드 포함 여부 확인
         return any(keyword in message_lower for keyword in feedback_keywords)
     
+    def _analyze_feedback_sentiment(self, user_message: str) -> str:
+        """
+        리포트 피드백의 감정을 분석합니다 (긍정/부정).
+        
+        Args:
+            user_message: 사용자 메시지
+            
+        Returns:
+            'positive' (긍정) 또는 'negative' (부정)
+        """
+        message_lower = user_message.lower()
+        
+        # 긍정 키워드
+        positive_keywords = [
+            '맞아', '맞다', '맞는', '맞는 것 같', '맞는거 같', '맞네', '맞아요',
+            '그래', '그렇다', '그렇네', '그런 것 같', '그런거 같',
+            '좋아', '좋네', '좋다', '좋은', '좋아요',
+            '신기', '신기해', '신기하다', '신기하네', '신기하네요',
+            '오', '오!', '오...', '오~',
+            '대박', '와', '와우', '헐',
+            '재밌', '재미있', '재미있다', '재미있네',
+            '괜찮', '괜찮아', '괜찮네', '괜찮다',
+            '정확', '정확해', '정확하다', '정확하네',
+            '인정', '인정해', '인정한다', '인정하네',
+            '알겠어', '이해했어', '알겠다', '이해했다',
+            '그렇구나', '그렇군', '그런가',
+            '흠', '음', '아', '아하'
+        ]
+        
+        # 부정 키워드
+        negative_keywords = [
+            '아니', '아니다', '아니야', '아니에요', '아닌', '아닌 것 같', '아닌거 같',
+            '틀렸', '틀렸어', '틀렸다', '틀렸네',
+            '안 맞', '안 맞아', '안 맞네', '안 맞다',
+            '다르', '다르다', '다른', '다른 것 같', '다른거 같', '다르네',
+            '잘못', '잘못됐', '잘못됐어', '잘못됐다',
+            '싫', '싫어', '싫다', '싫네',
+            '그렇지 않', '그렇지 않아', '그렇지 않네',
+            '아닌데', '아닌데요',
+            '모르겠', '모르겠어', '모르겠다', '모르겠네',
+            '의심', '의심스러', '의심스럽',
+            '몰라', '모르겠어'
+        ]
+        
+        # 긍정 키워드 개수
+        positive_count = sum(1 for keyword in positive_keywords if keyword in message_lower)
+        # 부정 키워드 개수
+        negative_count = sum(1 for keyword in negative_keywords if keyword in message_lower)
+        
+        # 부정 키워드가 더 많거나 동일하면 부정, 그 외는 긍정
+        if negative_count > 0 and negative_count >= positive_count:
+            return 'negative'
+        else:
+            return 'positive'
+    
     def _select_image_by_response(self, reply: str) -> Optional[str]:
         """
         AI 응답 내용을 분석하여 적절한 이미지를 선택합니다.
@@ -765,8 +820,9 @@ class ChatbotService:
                     self.final_regret_score = final_analysis_results['total']
                     report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
                     
-                    # 리포트만 반환 (추가 텍스트 없이)
-                    reply = report
+                    # 리포트 앞에 감사 메시지 추가
+                    intro_message = "얘기해줘서 고마워! :) 방금 너의 연애 감정 리포트 결과가 나왔어.\n\n"
+                    reply = intro_message + report
                     
                     # 리포트 표시 후 "결과에 대해서 어떻게 생각해?" 질문 추가
                     feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
@@ -844,16 +900,35 @@ class ChatbotService:
             if self.dialogue_state == 'REPORT_SHOWN':
                 # REPORT_SHOWN 상태에서는 어떤 입력이든 피드백으로 처리
                 if self.final_regret_score is not None:
-                    if self.final_regret_score <= 50:
+                    # 사용자 피드백 감정 분석
+                    sentiment = self._analyze_feedback_sentiment(user_message)
+                    print(f"[FLOW_CONTROL] 리포트 피드백 감정 분석: {sentiment}")
+                    
+                    # 미련도와 반응에 따른 이미지 선택 로직
+                    is_low_regret = self.final_regret_score <= 50
+                    
+                    if is_low_regret:
                         # 미련도 50% 이하
-                        selected_image = "/static/images/chatbot/regretX_program.png"
-                        closing_message = "야... 이제 넌 미련이 거의 없구나 잘됐다! 새로 프로그램 기획하고 있는데 차라리 여기 한번 면접 볼래? 아무튼 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎㅎ"
+                        if sentiment == 'positive':
+                            # 긍정 반응: regretX_program.png
+                            selected_image = "/static/images/chatbot/regretX_program.png"
+                            closing_message = "야... 이제 넌 미련이 거의 없구나 잘됐다! 새로 프로그램 기획하고 있는데 차라리 여기 한번 면접 볼래? 아무튼 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎㅎ"
+                        else:
+                            # 부정 반응: regretO_program.png (반대로)
+                            selected_image = "/static/images/chatbot/regretO_program.png"
+                            closing_message = "그러면 이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게! 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎ"
                     else:
                         # 미련도 50% 초과
-                        selected_image = "/static/images/chatbot/regretO_program.png"
-                        closing_message = "이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게! 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎ"
+                        if sentiment == 'positive':
+                            # 긍정 반응: regretO_program.png
+                            selected_image = "/static/images/chatbot/regretO_program.png"
+                            closing_message = "이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게! 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎ"
+                        else:
+                            # 부정 반응: regretX_program.png (반대로)
+                            selected_image = "/static/images/chatbot/regretX_program.png"
+                            closing_message = "아 미안. 야... 이제 넌 미련이 거의 없구나 잘됐다! 그럼 대신 새로 프로그램 기획하고 있는데 차라리 여기 한번 면접 볼래? 아무튼 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎㅎ"
                     
-                    print(f"[FLOW_CONTROL] 리포트 피드백 처리 (모든 입력 허용). 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
+                    print(f"[FLOW_CONTROL] 리포트 피드백 처리. 미련도: {self.final_regret_score:.1f}%, 감정: {sentiment}, 이미지: {selected_image}")
                     
                     # 대화 종료 상태로 변경
                     self.dialogue_state = 'FINAL_CLOSING'
@@ -862,9 +937,15 @@ class ChatbotService:
                     self.dialogue_history.append({"role": username, "content": user_message})
                     self.dialogue_history.append({"role": "혜슬", "content": closing_message})
                     
+                    # 프로그램 추천 정보를 포함한 응답 반환
                     return {
                         'reply': closing_message,
-                        'image': selected_image
+                        'image': selected_image,
+                        'program_recommendation': {
+                            'image': selected_image,
+                            'message': closing_message,
+                            'sentiment': sentiment
+                        }
                     }
                 else:
                     # 미련도 점수가 없는 경우 (예외 처리)

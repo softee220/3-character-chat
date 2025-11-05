@@ -45,6 +45,22 @@ async function sendMessage(isInitial = false) {
     // 로딩 메시지 제거
     removeMessage(loadingId);
 
+    // 프로그램 추천 응답인지 확인
+    if (data.program_recommendation) {
+      // 프로그램 추천 페이지로 즉시 리다이렉트
+      const recommendation = data.program_recommendation;
+      const params = new URLSearchParams({
+        image: recommendation.image || data.image || '',
+        message: recommendation.message || data.reply || '',
+        sentiment: recommendation.sentiment || 'positive'
+      });
+      
+      // 바로 리다이렉트
+      window.location.href = `/program_recommendation?${params.toString()}`;
+      
+      return;
+    }
+
     // 응답 파싱
     // 백엔드에서 {reply: "...", image: "..."} 형태로 반환됨
     const replyText = data.reply || "";
@@ -61,6 +77,40 @@ async function sendMessage(isInitial = false) {
   }
 }
 
+// 이미지 업데이트 함수
+function updateCharacterImage(imageSrc) {
+  const characterImage = document.getElementById("character-image");
+  const characterName = document.getElementById("character-name");
+  
+  if (characterImage && imageSrc) {
+    console.log("[DEBUG] 캐릭터 이미지 업데이트:", imageSrc);
+    characterImage.src = imageSrc;
+    characterImage.classList.add("show");
+    
+    // 캐릭터 이름도 표시
+    if (characterName) {
+      characterName.classList.add("show");
+    }
+    
+    // 이미지 로드 에러 처리
+    characterImage.onerror = function() {
+      console.error("[ERROR] 이미지 로드 실패:", imageSrc);
+      this.style.display = 'none';
+      if (characterName) {
+        characterName.classList.remove("show");
+      }
+    };
+    
+    characterImage.onload = function() {
+      console.log("[DEBUG] 이미지 로드 성공:", imageSrc);
+      this.style.display = 'block';
+      if (characterName) {
+        characterName.classList.add("show");
+      }
+    };
+  }
+}
+
 // 메시지 DOM에 추가
 let messageIdCounter = 0;
 function appendMessage(sender, text, imageSrc = null) {
@@ -72,30 +122,12 @@ function appendMessage(sender, text, imageSrc = null) {
   if (sender === "user") {
     messageElem.textContent = text;
   } else {
-    // 이미지가 있으면 먼저 표시
+    // 이미지가 있으면 왼쪽 패널에 표시
     if (imageSrc) {
-      console.log("[DEBUG] 이미지 추가 중:", imageSrc);
-      const botImg = document.createElement("img");
-      botImg.classList.add("bot-big-img");
-      botImg.src = imageSrc;
-      botImg.alt = "챗봇 이미지";
-      
-      // 이미지 로드 에러 처리
-      botImg.onerror = function() {
-        console.error("[ERROR] 이미지 로드 실패:", imageSrc);
-        this.style.display = 'none';
-      };
-      
-      botImg.onload = function() {
-        console.log("[DEBUG] 이미지 로드 성공:", imageSrc);
-      };
-      
-      messageElem.appendChild(botImg);
-    } else {
-      console.log("[DEBUG] 이미지 없음 (imageSrc가 null 또는 undefined)");
+      updateCharacterImage(imageSrc);
     }
 
-    // 텍스트 추가
+    // 텍스트만 메시지에 추가
     const textContainer = document.createElement("div");
     textContainer.classList.add("bot-text-container");
     textContainer.textContent = text;

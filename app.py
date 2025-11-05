@@ -128,6 +128,19 @@ def api_chat():
         print(f"[ERROR] 응답 생성 실패: {e}")
         return jsonify({'reply': '죄송해요, 일시적인 오류가 발생했어요. 다시 시도해주세요.'}), 500
 
+# 프로그램 추천 페이지
+@app.route('/program_recommendation')
+def program_recommendation():
+    """프로그램 추천 페이지"""
+    image = request.args.get('image', '')
+    message = request.args.get('message', '')
+    sentiment = request.args.get('sentiment', 'positive')
+    
+    return render_template('program_recommendation.html', 
+                         image=image,
+                         message=message,
+                         sentiment=sentiment)
+
 # 헬스체크 엔드포인트 (Vercel용)
 @app.route('/health')
 def health():
