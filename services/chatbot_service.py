@@ -600,8 +600,13 @@ class ChatbotService:
                             self.dialogue_state = next_state
                             print(f"[FLOW_CONTROL] {previous_state} 상태 턴 수 초과 ({self.state_turns}/{max_turns_for_state}). → {next_state}로 전환")
                             
-                            # 브릿지 프롬프트 생성
-                            if not special_instruction:
+                            # 마지막 질문 상태를 완료했으면 바로 CLOSING으로 전환
+                            if next_state == 'TRANSITION_NATURAL_REPORT':
+                                self.dialogue_state = 'CLOSING'
+                                print(f"[FLOW_CONTROL] 모든 질문 완료. → CLOSING 상태로 자동 전환 (리포트 생성)")
+                                if not special_instruction:
+                                    special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
+                            elif not special_instruction:
                                 special_instruction = self._generate_bridge_question_prompt(
                                     previous_state, next_state, "턴 수 초과"
                                 )
@@ -615,13 +620,20 @@ class ChatbotService:
                         current_idx = self.dialogue_states_flow.index(previous_state)
                         if current_idx + 1 < len(self.dialogue_states_flow):
                             next_state = self.dialogue_states_flow[current_idx + 1]
-                            self.dialogue_state = next_state
-                            print(f"[FLOW_CONTROL] {previous_state} 고정 질문 소진. → {next_state}로 전환")
                             
-                            if not special_instruction:
-                                special_instruction = self._generate_bridge_question_prompt(
-                                    previous_state, next_state, "고정 질문 소진"
-                                )
+                            # 마지막 질문 상태를 완료했으면 바로 CLOSING으로 전환
+                            if next_state == 'TRANSITION_NATURAL_REPORT':
+                                self.dialogue_state = 'CLOSING'
+                                print(f"[FLOW_CONTROL] {previous_state} 고정 질문 소진. 모든 질문 완료. → CLOSING 상태로 자동 전환 (리포트 생성)")
+                                if not special_instruction:
+                                    special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
+                            else:
+                                self.dialogue_state = next_state
+                                print(f"[FLOW_CONTROL] {previous_state} 고정 질문 소진. → {next_state}로 전환")
+                                if not special_instruction:
+                                    special_instruction = self._generate_bridge_question_prompt(
+                                        previous_state, next_state, "고정 질문 소진"
+                                    )
                             bridge_prompt_added = True
                     except ValueError:
                         pass
@@ -821,7 +833,7 @@ class ChatbotService:
             
             if self.dialogue_state == 'NO_EX_CLOSING':
                 print("[FLOW_CONTROL] NO_EX_CLOSING 상태: 리포트 생성 생략")
-            elif is_report_request or is_transition_state:
+            elif is_report_request or is_transition_state or self.dialogue_state == 'CLOSING':
                 # 리포트 생성을 위한 전체 대화 맥락 수집
                 full_context = self._collect_dialogue_context_for_report()
                 
@@ -830,6 +842,7 @@ class ChatbotService:
                 final_analysis_results = self.emotion_analyzer.calculate_regret_index(full_context, use_rag=True)
                 print(f"[ANALYSIS] 최종 미련도 (RAG 기반): {final_analysis_results['total']:.1f}%")
                 
+                # CLOSING 상태에서는 자동으로 리포트 생성
                 if self.dialogue_state == 'CLOSING':
                     if final_analysis_results['total'] > 0:
                         # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
@@ -844,7 +857,7 @@ class ChatbotService:
                         # 리포트 표시 완료 상태로 전환
                         self.dialogue_state = 'REPORT_SHOWN'
                         print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
-                
+
                 elif self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT']:
                     if is_report_request:
                         self.dialogue_state = 'CLOSING'
