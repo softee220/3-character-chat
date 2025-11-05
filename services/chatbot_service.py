@@ -858,7 +858,26 @@ class ChatbotService:
                         self.dialogue_state = 'REPORT_SHOWN'
                         print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
 
-                elif self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT']:
+                elif self.dialogue_state == 'TRANSITION_FORCED_REPORT':
+                    # 강제 종료 상태: 중단 요청으로 인한 종료이므로 바로 리포트 생성
+                    self.dialogue_state = 'CLOSING'
+                    print("[FLOW_CONTROL] 강제 종료 상태. 자동으로 리포트 생성.")
+                    if final_analysis_results['total'] > 0:
+                        # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
+                        self.final_regret_score = final_analysis_results['total']
+                        report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
+                        reply += f"\n\n{report}"
+                        
+                        # 리포트 표시 후 피드백 질문 추가
+                        feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
+                        reply += feedback_question
+                        
+                        # 리포트 표시 완료 상태로 전환
+                        self.dialogue_state = 'REPORT_SHOWN'
+                        print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
+
+                elif self.dialogue_state == 'TRANSITION_NATURAL_REPORT':
+                    # 자연스러운 전환: 사용자가 리포트를 요청할 때만 생성
                     if is_report_request:
                         self.dialogue_state = 'CLOSING'
                         print("[FLOW_CONTROL] 리포트 요청 수락. CLOSING 상태로 전환.")
@@ -875,7 +894,7 @@ class ChatbotService:
                             # 리포트 표시 완료 상태로 전환
                             self.dialogue_state = 'REPORT_SHOWN'
                             print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
-                
+
                 elif is_report_request:
                     self.dialogue_state = 'CLOSING'
                     print("[FLOW_CONTROL] 사용자 리포트 요청. CLOSING 상태로 전환.")
