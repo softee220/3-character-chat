@@ -72,8 +72,13 @@ class ChatbotService:
         # 턴 수 임계값
         self.early_exit_turn_count = turn_thresholds.get('early_exit_turn_count', 5)
         self.max_total_turns = turn_thresholds.get('max_total_turns', 25) 
-        # 하드 코딩해야할듯....
-        self.max_state_turns = turn_thresholds.get('max_state_turns', 5)
+        # 스테이지별 턴 수 설정 (딕셔너리로 로드)
+        max_state_turns_config = turn_thresholds.get('max_state_turns', {})
+        if isinstance(max_state_turns_config, dict):
+            self.max_state_turns = max_state_turns_config
+        else:
+            # 기존 단일 값 형식 호환성 유지
+            self.max_state_turns = {'default': max_state_turns_config if max_state_turns_config else 5}
         
         # 감정 임계값
         self.low_regret_threshold = emotion_thresholds.get('low_regret_threshold', 25.0)
@@ -229,6 +234,27 @@ class ChatbotService:
             self.question_indices[state] = 0
         self.question_indices[state] += 1
         print(f"[QUESTION] {state} 상태: 질문 인덱스 → {self.question_indices[state]}")
+    
+    
+    def _get_max_state_turns(self, state: str) -> int:
+        """
+        현재 상태에 맞는 최대 턴 수를 반환합니다.
+        
+        Args:
+            state: DSM 상태
+            
+        Returns:
+            해당 상태의 최대 턴 수 (없으면 default 값 사용)
+        """
+        if isinstance(self.max_state_turns, dict):
+            # 상태별 턴 수가 설정되어 있으면 사용
+            if state in self.max_state_turns:
+                return self.max_state_turns[state]
+            # 없으면 default 값 사용
+            return self.max_state_turns.get('default', 5)
+        else:
+            # 기존 단일 값 형식 호환성 유지
+            return self.max_state_turns if isinstance(self.max_state_turns, int) else 5
     
     
     def _detect_topic_deviation(self, user_message: str) -> Optional[str]:
@@ -564,14 +590,15 @@ class ChatbotService:
             
             if previous_state != 'INITIAL_SETUP' and previous_state not in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING', 'NO_EX_CLOSING', 'REPORT_SHOWN', 'FINAL_CLOSING']:
                 # 조건 1: 턴 수 초과
-                if self.state_turns >= self.max_state_turns:
+                max_turns_for_state = self._get_max_state_turns(previous_state)
+                if self.state_turns >= max_turns_for_state:
                     # 다음 상태로 전환
                     try:
                         current_idx = self.dialogue_states_flow.index(previous_state)
                         if current_idx + 1 < len(self.dialogue_states_flow):
                             next_state = self.dialogue_states_flow[current_idx + 1]
                             self.dialogue_state = next_state
-                            print(f"[FLOW_CONTROL] {previous_state} 상태 턴 수 초과. → {next_state}로 전환")
+                            print(f"[FLOW_CONTROL] {previous_state} 상태 턴 수 초과 ({self.state_turns}/{max_turns_for_state}). → {next_state}로 전환")
                             
                             # 브릿지 프롬프트 생성
                             if not special_instruction:
@@ -704,7 +731,8 @@ class ChatbotService:
                     self.tail_question_used[self.dialogue_state] = False
             else:
                 self.state_turns += 1
-                print(f"[FLOW_CONTROL] 상태 유지: {self.dialogue_state} (턴 수: {self.state_turns})")
+                max_turns = self._get_max_state_turns(self.dialogue_state)
+                print(f"[FLOW_CONTROL] 상태 유지: {self.dialogue_state} (턴 수: {self.state_turns}/{max_turns})")
             
             # [6단계] 프롬프트 구성
             prompt = self._build_prompt(
