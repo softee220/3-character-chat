@@ -54,37 +54,6 @@ async function sendMessage(isInitial = false) {
     console.log("[DEBUG] API 응답:", { replyText: replyText.substring(0, 50), imagePath });
 
     appendMessage("bot", replyText, imagePath);
-
-    // needs_report_generation 플래그가 있으면 자동으로 리포트 생성 요청
-    if (data.needs_report_generation === true) {
-      console.log("[DEBUG] 리포트 생성 자동 요청");
-      // 짧은 딜레이 후 자동으로 리포트 생성 요청
-      setTimeout(() => {
-        // 자동 리포트 요청 (사용자 입력 없이)
-        const loadingId2 = appendMessage("bot", "생각 중...");
-        
-        fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: "", // 빈 메시지로 리포트 생성 트리거
-            username: username,
-          }),
-        })
-        .then(response => response.json())
-        .then(data => {
-          removeMessage(loadingId2);
-          const replyText = data.reply || "";
-          const imagePath = data.image || null;
-          appendMessage("bot", replyText, imagePath);
-        })
-        .catch(err => {
-          console.error("리포트 생성 에러:", err);
-          removeMessage(loadingId2);
-          appendMessage("bot", "죄송합니다. 리포트 생성 중 오류가 발생했습니다.");
-        });
-      }, 500);
-    }
   } catch (err) {
     console.error("메시지 전송 에러:", err);
     removeMessage(loadingId);
