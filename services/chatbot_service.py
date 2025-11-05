@@ -600,8 +600,13 @@ class ChatbotService:
                             self.dialogue_state = next_state
                             print(f"[FLOW_CONTROL] {previous_state} 상태 턴 수 초과 ({self.state_turns}/{max_turns_for_state}). → {next_state}로 전환")
                             
-                            # 브릿지 프롬프트 생성
-                            if not special_instruction:
+                            # 마지막 질문 상태를 완료했으면 바로 CLOSING으로 전환
+                            if next_state == 'TRANSITION_NATURAL_REPORT':
+                                self.dialogue_state = 'CLOSING'
+                                print(f"[FLOW_CONTROL] 모든 질문 완료. → CLOSING 상태로 자동 전환 (리포트 생성)")
+                                if not special_instruction:
+                                    special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
+                            elif not special_instruction:
                                 special_instruction = self._generate_bridge_question_prompt(
                                     previous_state, next_state, "턴 수 초과"
                                 )
@@ -615,13 +620,20 @@ class ChatbotService:
                         current_idx = self.dialogue_states_flow.index(previous_state)
                         if current_idx + 1 < len(self.dialogue_states_flow):
                             next_state = self.dialogue_states_flow[current_idx + 1]
-                            self.dialogue_state = next_state
-                            print(f"[FLOW_CONTROL] {previous_state} 고정 질문 소진. → {next_state}로 전환")
                             
-                            if not special_instruction:
-                                special_instruction = self._generate_bridge_question_prompt(
-                                    previous_state, next_state, "고정 질문 소진"
-                                )
+                            # 마지막 질문 상태를 완료했으면 바로 CLOSING으로 전환
+                            if next_state == 'TRANSITION_NATURAL_REPORT':
+                                self.dialogue_state = 'CLOSING'
+                                print(f"[FLOW_CONTROL] {previous_state} 고정 질문 소진. 모든 질문 완료. → CLOSING 상태로 자동 전환 (리포트 생성)")
+                                if not special_instruction:
+                                    special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
+                            else:
+                                self.dialogue_state = next_state
+                                print(f"[FLOW_CONTROL] {previous_state} 고정 질문 소진. → {next_state}로 전환")
+                                if not special_instruction:
+                                    special_instruction = self._generate_bridge_question_prompt(
+                                        previous_state, next_state, "고정 질문 소진"
+                                    )
                             bridge_prompt_added = True
                     except ValueError:
                         pass
