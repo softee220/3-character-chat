@@ -745,6 +745,49 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
                 max_turns = self._get_max_state_turns(self.dialogue_state)
                 print(f"[FLOW_CONTROL] 상태 유지: {self.dialogue_state} (턴 수: {self.state_turns}/{max_turns})")
             
+            # [5.5단계] 리포트 요청 사전 감지 및 처리 (LLM 호출 전에 처리)
+            is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
+            is_transition_state = self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']
+            
+            # 리포트 요청이 감지되면 LLM 호출 없이 바로 리포트 생성
+            if self.dialogue_state != 'NO_EX_CLOSING' and (is_report_request or is_transition_state):
+                # 리포트 생성을 위한 전체 대화 맥락 수집
+                full_context = self._collect_dialogue_context_for_report()
+                
+                # 리포트 생성 시점에 누적된 대화 기록을 바탕으로 RAG를 사용한 미련도 재계산
+                print("[ANALYSIS] 리포트 생성: 누적된 대화 기록을 바탕으로 RAG를 사용한 미련도 계산 시작")
+                final_analysis_results = self.emotion_analyzer.calculate_regret_index(full_context, use_rag=True)
+                print(f"[ANALYSIS] 최종 미련도 (RAG 기반): {final_analysis_results['total']:.1f}%")
+                
+                if final_analysis_results['total'] > 0:
+                    # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
+                    self.final_regret_score = final_analysis_results['total']
+                    report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
+                    
+                    # 리포트만 반환 (추가 텍스트 없이)
+                    reply = report
+                    
+                    # 리포트 표시 후 "결과에 대해서 어떻게 생각해?" 질문 추가
+                    feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
+                    reply += feedback_question
+                    
+                    # 리포트 표시 완료 상태로 전환
+                    self.dialogue_state = 'REPORT_SHOWN'
+                    print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
+                    
+                    # 대화 기록 저장
+                    self.dialogue_history.append({"role": username, "content": user_message})
+                    self.dialogue_history.append({"role": "혜슬", "content": reply})
+                    
+                    print(f"[BOT] {reply[:100]}...")
+                    print(f"{'='*50}\n")
+                    
+                    # 리포트 이미지와 함께 반환
+                    return {
+                        'reply': reply,
+                        'image': "/static/images/chatbot/01_smile.png"
+                    }
+            
             # [6단계] 프롬프트 구성
             prompt = self._build_prompt(
                 user_message=user_message,
@@ -807,7 +850,7 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
                     else:
                         # 미련도 50% 초과
                         selected_image = "/static/images/chatbot/regretO_program.png"
-                        closing_message = "아직 미련이 많이 남았네 ㅜㅜ 이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게! 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎ"
+                        closing_message = "이번에 환승연애 출연진 모집하고 있는데 X 번호 있으면 넘겨줘봐 우리가 연락해볼게! 오늘 얘기 나눠줘서 고마워~!!ㅎㅎㅎ"
                     
                     print(f"[FLOW_CONTROL] 리포트 피드백 처리 (모든 입력 허용). 미련도: {self.final_regret_score:.1f}%, 이미지: {selected_image}")
                     
@@ -826,99 +869,14 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
                     # 미련도 점수가 없는 경우 (예외 처리)
                     print("[WARNING] final_regret_score가 None입니다.")
             
-            # [8단계] 감정 리포트 생성 (특정 조건, NO_EX_CLOSING 상태에서는 생략)
-            is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
-            is_transition_state = self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']
-            
-            if self.dialogue_state == 'NO_EX_CLOSING':
-                print("[FLOW_CONTROL] NO_EX_CLOSING 상태: 리포트 생성 생략")
-            elif is_report_request or is_transition_state or self.dialogue_state == 'CLOSING':
-                # 리포트 생성을 위한 전체 대화 맥락 수집
-                full_context = self._collect_dialogue_context_for_report()
-                
-                # 리포트 생성 시점에 누적된 대화 기록을 바탕으로 RAG를 사용한 미련도 재계산
-                print("[ANALYSIS] 리포트 생성: 누적된 대화 기록을 바탕으로 RAG를 사용한 미련도 계산 시작")
-                final_analysis_results = self.emotion_analyzer.calculate_regret_index(full_context, use_rag=True)
-                print(f"[ANALYSIS] 최종 미련도 (RAG 기반): {final_analysis_results['total']:.1f}%")
-                
-                # CLOSING 상태에서는 자동으로 리포트 생성
-                if self.dialogue_state == 'CLOSING':
-                    if final_analysis_results['total'] > 0:
-                        # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
-                        self.final_regret_score = final_analysis_results['total']
-                        report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
-                        reply += f"\n\n{report}"
-                        
-                        # 리포트 표시 후 "결과에 대해서 어떻게 생각해?" 질문 추가
-                        feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
-                        reply += feedback_question
-                        
-                        # 리포트 표시 완료 상태로 전환
-                        self.dialogue_state = 'REPORT_SHOWN'
-                        print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
-
-                elif self.dialogue_state == 'TRANSITION_FORCED_REPORT':
-                    # 강제 종료 상태: 중단 요청으로 인한 종료이므로 바로 리포트 생성
-                    self.dialogue_state = 'CLOSING'
-                    print("[FLOW_CONTROL] 강제 종료 상태. 자동으로 리포트 생성.")
-                    if final_analysis_results['total'] > 0:
-                        # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
-                        self.final_regret_score = final_analysis_results['total']
-                        report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
-                        reply += f"\n\n{report}"
-                        
-                        # 리포트 표시 후 피드백 질문 추가
-                        feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
-                        reply += feedback_question
-                        
-                        # 리포트 표시 완료 상태로 전환
-                        self.dialogue_state = 'REPORT_SHOWN'
-                        print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
-
-                elif self.dialogue_state == 'TRANSITION_NATURAL_REPORT':
-                    # 자연스러운 전환: 사용자가 리포트를 요청할 때만 생성
-                    if is_report_request:
-                        self.dialogue_state = 'CLOSING'
-                        print("[FLOW_CONTROL] 리포트 요청 수락. CLOSING 상태로 전환.")
-                        if final_analysis_results['total'] > 0:
-                            # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
-                            self.final_regret_score = final_analysis_results['total']
-                            report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
-                            reply += f"\n\n{report}"
-                            
-                            # 리포트 표시 후 피드백 질문 추가
-                            feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
-                            reply += feedback_question
-                            
-                            # 리포트 표시 완료 상태로 전환
-                            self.dialogue_state = 'REPORT_SHOWN'
-                            print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
-
-                elif is_report_request:
-                    self.dialogue_state = 'CLOSING'
-                    print("[FLOW_CONTROL] 사용자 리포트 요청. CLOSING 상태로 전환.")
-                    if final_analysis_results['total'] > 0:
-                        # 최종 미련도 점수 저장 (RAG 기반 재계산 결과)
-                        self.final_regret_score = final_analysis_results['total']
-                        report = self.report_generator.generate_emotion_report(final_analysis_results, username, full_context)
-                        reply += f"\n\n{report}"
-                        
-                        # 리포트 표시 후 피드백 질문 추가
-                        feedback_question = "\n\n결과에 대해서 어떻게 생각해?"
-                        reply += feedback_question
-                        
-                        # 리포트 표시 완료 상태로 전환
-                        self.dialogue_state = 'REPORT_SHOWN'
-                        print("[FLOW_CONTROL] 리포트 생성 완료. REPORT_SHOWN 상태로 전환.")
-            
-            # [9단계] 대화 기록 저장
+            # [8단계] 대화 기록 저장
             self.dialogue_history.append({"role": username, "content": user_message})
             self.dialogue_history.append({"role": "혜슬", "content": reply})
             
             print(f"[BOT] {reply[:100]}...")
             print(f"{'='*50}\n")
             
-            # [10단계] 이미지 선택
+            # [9단계] 이미지 선택
             # 리포트가 포함된 경우 고정 이미지 사용
             if self.dialogue_state in ['CLOSING', 'REPORT_SHOWN']:
                 # 감정 리포트가 표시된 경우 고정 이미지
@@ -930,7 +888,7 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
                 if selected_image:
                     print(f"[IMAGE] 선택된 이미지: {selected_image}")
             
-            # [11단계] 응답 반환
+            # [10단계] 응답 반환
             return {
                 'reply': reply,
                 'image': selected_image
