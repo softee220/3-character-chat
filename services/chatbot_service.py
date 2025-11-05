@@ -267,7 +267,7 @@ class ChatbotService:
         Returns:
             redirect 타입 ("current_future_relationship" or "personal_topic") 또는 None
         """
-        current_future_keywords = ['현애인', '지금 만나는', '다음 연애', '미래', '새로운 사람', '현재', '지금']
+        current_future_keywords = ['현애인', '지금 만나는', '다음 연애', '미래', '새로운 사람', '현재']
         personal_keywords = ['일상', '취미', '가족', '학교', '회사', '여행']
         
         message_lower = user_message.lower()
@@ -386,6 +386,7 @@ class ChatbotService:
 더 깊은 이야기는 나중에 더 해보자.
 내가 아까 말한 우리 팀 데모 AI 에이전트에 네 데이터 충분히 들어간 것 같거든?
 AI 분석 결과 한 거 보여줄게 ㅎㅎ
+잠시만 기다려줘, 리포트 생성해줄게!
 """
         return closing_prompt
     
@@ -748,10 +749,9 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
             
             # [5.5단계] 리포트 요청 사전 감지 및 처리 (LLM 호출 전에 처리)
             is_report_request = any(keyword in user_message.lower() for keyword in ["분석", "리포트", "결과", "어때", "어떤"])
-            is_transition_state = self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']
             
-            # 리포트 요청이 감지되면 LLM 호출 없이 바로 리포트 생성
-            if self.dialogue_state != 'NO_EX_CLOSING' and (is_report_request or is_transition_state):
+            # GENERATING_REPORT 상태: 리포트 생성 후 반환
+            if self.dialogue_state == 'GENERATING_REPORT':
                 # 리포트 생성을 위한 전체 대화 맥락 수집
                 full_context = self._collect_dialogue_context_for_report()
                 
@@ -788,6 +788,28 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
                         'reply': reply,
                         'image': "/static/images/chatbot/01_smile.png"
                     }
+            
+            # TRANSITION_NATURAL_REPORT, TRANSITION_FORCED_REPORT, CLOSING 상태: 대기 메시지 반환 및 GENERATING_REPORT 상태로 전환
+            needs_report_generation = False
+            if self.dialogue_state in ['TRANSITION_NATURAL_REPORT', 'TRANSITION_FORCED_REPORT', 'CLOSING']:
+                # closing_prompt 기반으로 LLM 응답 생성 (이미 "기다려달라" 포함)
+                # special_instruction에 closing_prompt가 이미 들어가 있을 수 있으므로 확인
+                # TRANSITION_NATURAL_REPORT나 TRANSITION_FORCED_REPORT 상태에서는 이미 special_instruction이 설정되어 있을 수 있음
+                # 하지만 closing_prompt에 "기다려달라" 메시지가 포함되어 있으므로, closing_prompt를 사용
+                if not special_instruction:
+                    special_instruction = self._generate_closing_proposal_prompt(self.dialogue_history)
+                else:
+                    # 이미 special_instruction이 있으면 closing_prompt를 추가로 포함
+                    closing_prompt_text = self._generate_closing_proposal_prompt(self.dialogue_history)
+                    special_instruction = f"{special_instruction}\n\n{closing_prompt_text}"
+                
+                # 상태를 GENERATING_REPORT로 변경 (다음 호출 시 리포트 생성)
+                current_state_for_log = self.dialogue_state
+                self.dialogue_state = 'GENERATING_REPORT'
+                needs_report_generation = True
+                print(f"[FLOW_CONTROL] {current_state_for_log} → GENERATING_REPORT 상태로 전환 (대기 메시지 반환)")
+                
+                # LLM 호출을 위해 아래로 진행
             
             # [6단계] 프롬프트 구성
             prompt = self._build_prompt(
@@ -890,10 +912,16 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
                     print(f"[IMAGE] 선택된 이미지: {selected_image}")
             
             # [10단계] 응답 반환
-            return {
+            response_data = {
                 'reply': reply,
                 'image': selected_image
             }
+            
+            # CLOSING 상태에서 GENERATING_REPORT로 전환된 경우 리포트 생성 플래그 추가
+            if needs_report_generation:
+                response_data['needs_report_generation'] = True
+            
+            return response_data
             
         except Exception as e:
             print(f"[ERROR] 응답 생성 실패: {e}")
