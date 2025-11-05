@@ -341,7 +341,7 @@ class ChatbotService:
 
 **전환 전략:**
 
-1. 사용자가 말한 이별/미해결 감정에 대해 짧게 공감하거나 고개를 끄덕이는 듯한 반응
+1. 사용자가 말한 이별/미해결 감정에 대해 공감하거나 고개를 끄덕이는 듯한 반응
 
 2. "그래도", "그런데", "생각해보니" 같은 전환어를 사용해서 자연스럽게 긍정적인 기억으로 넘어가기
 
@@ -398,7 +398,7 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
         user_responses = []
         for item in self.dialogue_history:
             # 혜슬(봇)의 메시지가 아닌 것만 수집
-            if item.get('role') != '혜슬':
+            if item.get('role') != '혜슬' or item.get('role') != '이다음':
                 user_responses.append(item.get('content', ''))
         
         # 최근 10개 사용자 답변만 사용 (너무 길어지지 않도록)
@@ -683,11 +683,11 @@ AI 분석 결과 한 거 보여줄게 ㅎㅎ
                         first_question = self._get_next_question('RECALL_UNRESOLVED')
                         if first_question:
                             special_instruction = f"\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! 다음 질문을 자연스럽게 물어봐: {first_question}"
-                            # 첫 번째 질문을 사용했으므로 인덱스 증가
-                            self._mark_question_used('RECALL_UNRESOLVED')
-                            self.tail_question_used['RECALL_UNRESOLVED'] = True
                         else:
-                            special_instruction = "\n[INITIAL_SETUP 브릿지]: 네 이야기 듣고 싶다! X와의 헤어진 이유에 대해 물어봐"
+                            special_instruction = """\n[INITIAL_SETUP 브릿지]: 사용자가 긍정적으로 답변했어.
+1. "좋아! 그럼 계속해서 얘기해줘 ㅋㅋ" 처럼 자연스럽게 받아줘.
+2. "좋은 순간도 많았겠지만," 또는 "기억에 남는 순간도 많았겠지만" 같은 말로 자연스러운 브릿지를 만들어.
+3. 그리고 나서 첫 번째 고정 질문을 물어봐: {first_question}"""
                 elif any(keyword in user_message for keyword in negative_keywords):
                     print("[FLOW_CONTROL] INITIAL_SETUP: 부정적 응답. 설득.")
                     if not special_instruction:
