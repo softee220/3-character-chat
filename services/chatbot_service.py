@@ -884,7 +884,11 @@ class ChatbotService:
                         messages.append({"role": "user", "content": closing_prompt})
                         
                         response = self.client.chat.completions.create(
+<<<<<<< HEAD
                             model="gpt-5-pro",
+=======
+                            model="gpt-5-mini",
+>>>>>>> 786f396df25c6e526b04a88340824aabc5e5d665
                             messages=messages,
                             temperature=0.7,
                             max_tokens=500
@@ -960,7 +964,11 @@ class ChatbotService:
                 messages.append({"role": "user", "content": prompt})
                 
                 response = self.client.chat.completions.create(
+<<<<<<< HEAD
                     model="gpt-5-pro",
+=======
+                    model="gpt-5-mini",
+>>>>>>> 786f396df25c6e526b04a88340824aabc5e5d665
                     messages=messages,
                     temperature=0.7,
                     max_tokens=500
