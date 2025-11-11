@@ -27,16 +27,23 @@
         display: flex;
         flex-direction: column;
         align-items: center;
+        padding-top: 72px;
+        box-sizing: border-box;
       }
       .header {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 200;
         width: 100%;
         display: flex;
         align-items: center;
         justify-content: space-between;
-
         padding: 15px 20px;
         box-sizing: border-box;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        background: #fff;
       }
       .header-center {
         flex: 1;
@@ -74,6 +81,11 @@
         border-radius: 12px;
         padding: 20px;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        flex-shrink: 0;
+        box-sizing: border-box;
+        max-width: 100%;
+        position: sticky;
+        top: 90px;
       }
       #character-image {
         width: 100%;
@@ -82,6 +94,7 @@
         border-radius: 12px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         display: none;
+        object-fit: contain;
       }
       #character-image.show {
         display: block;
@@ -264,17 +277,56 @@
         .main-container {
           flex-direction: column;
           height: auto;
+          gap: 16px;
+          padding: 16px;
         }
         .image-panel {
           width: 100%;
           min-width: auto;
-          max-height: 300px;
+          flex-direction: column;
+          position: sticky;
+          top: 90px;
+          z-index: 2;
+          padding: 16px 14px;
+          min-height: 230px;
         }
         #character-image {
-          max-width: 200px;
+          max-width: 240px;
+          margin: 0 auto;
         }
         .chat-area {
           width: 100%;
+          max-height: calc(100vh - 90px - 260px);
+          overflow-y: auto;
+          margin-top: 10px;
+        }
+      }
+
+      @media (min-width: 769px) and (max-width: 1199px) {
+        .main-container {
+          flex-direction: column;
+          height: auto;
+          gap: 18px;
+          padding: 18px 20px;
+        }
+        .image-panel {
+          width: 100%;
+          min-width: auto;
+          flex-direction: column;
+          position: sticky;
+          top: 90px;
+          z-index: 2;
+          padding: 18px 16px;
+          min-height: 260px;
+        }
+        #character-image {
+          max-width: 320px;
+        }
+        .chat-area {
+          width: 100%;
+          max-height: calc(100vh - 90px - 320px);
+          overflow-y: auto;
+          margin-top: 12px;
         }
       }
     </style>

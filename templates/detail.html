@@ -22,110 +22,197 @@
         min-height: 100vh;
       }
       .modal-container {
-        max-width: 500px;
+        max-width: 520px;
         width: 90%;
-        margin: 20px auto;
+        margin: 24px auto;
         background: #fff;
-        border-radius: 12px;
+        border-radius: 16px;
         overflow: hidden;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        display: flex;
+        flex-direction: column;
       }
       .modal-header {
+        position: relative;
         display: flex;
         align-items: center;
-        justify-content: space-between;
-
-        padding: 15px 20px;
+        justify-content: center;
+        padding: 18px 26px;
       }
       .modal-header h2 {
         margin: 0;
-        flex: 1;
-        text-align: center;
-        font-size: 1.5rem;
+        font-size: clamp(1.4rem, 2vw, 1.8rem);
         color: #333;
+        font-weight: 600;
+        text-align: center;
       }
       .close-btn {
+        position: absolute;
+        right: 18px;
+        top: 50%;
+        transform: translateY(-50%);
         background: none;
         border: none;
-        font-size: 1.5rem;
+        font-size: 1.8rem;
         cursor: pointer;
         color: #666;
+        transition: color 0.2s ease;
+      }
+      .close-btn:hover {
+        color: #333;
       }
       .modal-content {
-        padding: 30px;
+        padding: 36px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 20px;
       }
       .bot-image {
-        width: 100%;
-        max-width: 300px;
+        width: min(100%, 320px);
         height: auto;
-        border-radius: 12px;
+        max-height: 60vh;
+        object-fit: contain;
+        border-radius: 14px;
         display: block;
-        margin: 0 auto 20px;
+        margin: 0 auto;
       }
       .bot-info {
         text-align: center;
       }
       .bot-info h1 {
-        margin: 0 0 15px 0;
-        font-size: 2rem;
-        color: #333;
+        margin: 0 0 16px 0;
+        font-size: clamp(1.8rem, 3vw, 2.2rem);
+        color: #2b2b2b;
+        font-weight: 700;
       }
       .bot-info p {
         margin: 15px 0;
         font-size: 1rem;
         color: #666;
-        line-height: 1.6;
+        line-height: 1.7;
       }
       .tags {
-        margin: 15px 0;
+        margin: 12px auto 0;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 8px;
+        max-width: 360px;
       }
       .tag {
         display: inline-block;
-        background: #e0e0e0;
-        color: #555;
-        padding: 6px 12px;
-        border-radius: 15px;
-        margin: 4px;
+        background: #f0efff;
+        color: #4d4d66;
+        padding: 8px 14px;
+        border-radius: 20px;
         font-size: 0.9rem;
+        font-weight: 500;
       }
       .username-area {
-        margin: 20px 0;
+        margin: 16px 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
+        gap: 12px;
+        flex-wrap: wrap;
       }
       .username-area label {
         font-size: 1rem;
         color: #333;
+        font-weight: 500;
       }
       .username-area input {
-        padding: 8px 12px;
+        padding: 10px 14px;
         font-size: 1rem;
         border: 2px solid #ddd;
-        border-radius: 8px;
-        width: 50%;
-        transition: border 0.2s;
+        border-radius: 10px;
+        width: min(240px, 60%);
+        transition: border 0.2s ease, box-shadow 0.2s ease;
       }
       .username-area input:focus {
         outline: none;
         border-color: #764ba2;
+        box-shadow: 0 0 0 4px rgba(118, 75, 162, 0.1);
       }
       .start-chat {
-        display: block;
-        margin: 20px 0;
-        padding: 12px 20px;
+        display: inline-block;
+        margin: 20px auto 0;
+        padding: 15px 40px;
         background: #764ba2;
         color: #fff;
         text-decoration: none;
-        border-radius: 8px;
+        border-radius: 25px;
         font-size: 1.1rem;
+        font-weight: 600;
         text-align: center;
         cursor: pointer;
-        transition: transform 0.2s;
+        transition: transform 0.2s, box-shadow 0.2s;
+        width: min(320px, 100%);
       }
       .start-chat:hover {
         transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+      }
+
+      /* 반응형 - 모바일 (세로 0~767px) */
+      @media (max-width: 767px) {
+        body {
+          padding: 12px;
+          align-items: flex-start;
+        }
+        .modal-container {
+          width: 100%;
+          border-radius: 12px;
+        }
+        .modal-header {
+          padding: 16px 18px;
+        }
+        .modal-header h2 {
+          font-size: 1.4rem;
+          padding: 0 36px;
+        }
+        .modal-content {
+          padding: 24px 20px 28px;
+        }
+        .bot-image {
+          max-width: min(85vw, 260px);
+          max-height: 45vh;
+        }
+        .bot-info h1 {
+          font-size: 1.8rem;
+        }
+        .start-chat {
+          width: 100%;
+          max-width: 200px;
+        }
+      }
+
+      /* 반응형 - 태블릿 세로/가로 (768px ~ 1199px) */
+      @media (min-width: 768px) and (max-width: 1199px) {
+        .modal-container {
+          max-width: 640px;
+        }
+        .modal-content {
+          padding: 32px;
+        }
+        .bot-image {
+          max-width: 340px;
+          max-height: 55vh;
+        }
+      }
+
+      /* 반응형 - 데스크탑 1200px 이상 */
+      @media (min-width: 1200px) {
+        .modal-container {
+          max-width: 720px;
+        }
+        .modal-content {
+          padding: 40px 48px;
+        }
+        .bot-image {
+          max-width: 360px;
+        }
       }
     </style>
   </head>
@@ -149,7 +236,7 @@
         />
 
         <div class="bot-info">
-          <h1>{{ bot.name }}</h1>
+          <h1>이다음</h1>
 
           <div class="tags">
             {% for tag in bot.tags %}

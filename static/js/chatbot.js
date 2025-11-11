@@ -9,6 +9,9 @@ const sendBtn = document.getElementById("send-btn");
 const videoBtn = document.getElementById("videoBtn");
 const imageBtn = document.getElementById("imageBtn");
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const BOT_SEGMENT_DELAY = 600;
+
 // 메시지 전송 함수
 async function sendMessage(isInitial = false) {
   let message;
@@ -69,7 +72,32 @@ async function sendMessage(isInitial = false) {
     // 디버깅용 로그
     console.log("[DEBUG] API 응답:", { replyText: replyText.substring(0, 50), imagePath });
 
-    appendMessage("bot", replyText, imagePath);
+    const rawSegments = replyText
+      .split(/\n\s*\n/g)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+
+    let segments = rawSegments;
+    const reportIndex = rawSegments.findIndex((segment) =>
+      segment.includes("연애 감정 리포트")
+    );
+
+    if (reportIndex !== -1) {
+      const reportSegment = rawSegments.slice(reportIndex).join("\n\n");
+      segments = [...rawSegments.slice(0, reportIndex), reportSegment];
+    }
+
+    if (segments.length === 0) {
+      appendMessage("bot", replyText, imagePath);
+    } else {
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        appendMessage("bot", segment, i === 0 ? imagePath : null);
+        if (i < segments.length - 1) {
+          await delay(BOT_SEGMENT_DELAY);
+        }
+      }
+    }
   } catch (err) {
     console.error("메시지 전송 에러:", err);
     removeMessage(loadingId);
