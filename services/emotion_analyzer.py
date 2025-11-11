@@ -193,7 +193,7 @@ class EmotionAnalyzer:
         
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5-pro",
                 messages=[
                     {"role": "system", "content": "당신은 연애 감정 분석 전문가입니다. 사용자의 답변을 정확하게 분석하여 1-100점 사이로 평가하세요."},
                     {"role": "user", "content": prompt}
@@ -345,7 +345,7 @@ class ReportGenerator:
         
         try:
             response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-5-pro",
                 messages=[
                     {"role": "system", "content": "당신은 '환승연애' PD 친구로, 사용자에게 진심 어린 조언을 하는 따뜻한 친구입니다."},
                     {"role": "user", "content": prompt}
