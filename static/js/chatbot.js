@@ -88,11 +88,11 @@ async function sendMessage(isInitial = false) {
     }
 
     if (segments.length === 0) {
-      appendMessage("bot", replyText, imagePath);
+      appendMessage("bot", replyText, imagePath, true);
     } else {
       for (let i = 0; i < segments.length; i++) {
         const segment = segments[i];
-        appendMessage("bot", segment, i === 0 ? imagePath : null);
+        appendMessage("bot", segment, i === 0 ? imagePath : null, i === 0);
         if (i < segments.length - 1) {
           await delay(BOT_SEGMENT_DELAY);
         }
@@ -108,40 +108,28 @@ async function sendMessage(isInitial = false) {
 // 이미지 업데이트 함수
 function updateCharacterImage(imageSrc) {
   const characterImage = document.getElementById("character-image");
-  const characterName = document.getElementById("character-name");
   
   if (characterImage && imageSrc) {
     console.log("[DEBUG] 캐릭터 이미지 업데이트:", imageSrc);
     characterImage.src = imageSrc;
     characterImage.classList.add("show");
     
-    // 캐릭터 이름도 표시
-    if (characterName) {
-      characterName.classList.add("show");
-    }
-    
     // 이미지 로드 에러 처리
     characterImage.onerror = function() {
       console.error("[ERROR] 이미지 로드 실패:", imageSrc);
       this.style.display = 'none';
-      if (characterName) {
-        characterName.classList.remove("show");
-      }
     };
     
     characterImage.onload = function() {
       console.log("[DEBUG] 이미지 로드 성공:", imageSrc);
       this.style.display = 'block';
-      if (characterName) {
-        characterName.classList.add("show");
-      }
     };
   }
 }
 
 // 메시지 DOM에 추가
 let messageIdCounter = 0;
-function appendMessage(sender, text, imageSrc = null) {
+function appendMessage(sender, text, imageSrc = null, showSenderLabel = false) {
   const messageId = `msg-${messageIdCounter++}`;
   const messageElem = document.createElement("div");
   messageElem.classList.add("message", sender);
@@ -153,6 +141,13 @@ function appendMessage(sender, text, imageSrc = null) {
     // 이미지가 있으면 왼쪽 패널에 표시
     if (imageSrc) {
       updateCharacterImage(imageSrc);
+    }
+
+    if (showSenderLabel) {
+      const senderLabel = document.createElement("div");
+      senderLabel.classList.add("sender-label");
+      senderLabel.textContent = "다음이";
+      messageElem.appendChild(senderLabel);
     }
 
     // 텍스트만 메시지에 추가
